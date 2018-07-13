@@ -14,14 +14,20 @@ class MySentences(object):
     Saves us from loading everything into memory at once.
     """
 
-    def __init__(self, txt_files, verbose=True):
+    def __init__(self, txt_files, pos_tag=False, verbose=True):
         """
         `txt_files` is a list of paths to the txt files (relative wrt. this script).
         For the Harry Potter, this will be a list of length 7, but easily applicable to any list of text files.
+
+        If `pos_tag` is set to True, rather than just return a list of words,
+        we return a list of words paired with their associated Part of Speech tag
+
+        If `verbose` set, we output various pieces of logging information throughuout the training procedure
         """
 
         self.iteration = 0
         self.verbose = verbose
+        self.pos_tag = pos_tag
         self.txt_files = txt_files
 
     def __iter__(self):
@@ -47,9 +53,9 @@ class MySentences(object):
 
                     if line:
 
-                        sents = nltk.sent_tokenize(line.decode('utf8'))     # Line in text to list of sents
-                        sents = [nltk.word_tokenize(s) for s in sents]      # List of sents to list of list of tokens
-                        sents = [MySentences.preprocess(s) for s in sents]  # Pre-process each token in each sent
+                        sents = nltk.sent_tokenize(line.decode('utf8'))  # Line in text to list of sents
+                        sents = [nltk.word_tokenize(s) for s in sents]   # List of sents to list of list of tokens
+                        sents = [self.preprocess(s) for s in sents]      # Pre-process each token in each sent
 
                         for s in sents:
                             if s:
@@ -63,27 +69,43 @@ class MySentences(object):
 
         self.iteration += 1
 
-    @staticmethod
-    def preprocess(tokens):
+    def preprocess(self, tokens):
         """
         Clean line of text before yielding for word2vec training.
         Takes a list of tokens `tokens`, and returns a pre-processed version of this list.
 
         For increased speed, rather than sentence segmenting, word tokenizing, and pre-processing each iteration,
         these pre-processed lists could be saved off to disk, so iteration consists solely of loading files & yielding.
+        This becomes more crucial as we do POS tagging or Word Sense Disambiguation.
         """
 
         return_tokens = []
 
-        for tok in tokens:
+        if self.pos_tag:
 
-            tok = tok.lower()
-            tok = regex.sub(r'[^\p{Alpha} ]', '', tok, regex.U)  # Remove any character not alphabetical or a space
-            tok = tok.strip()
+            tokens = nltk.pos_tag(tokens)  # Returns a list of tuples: (token, POS tag)
 
-            if tok:
-                # If there are some characters left
-                return_tokens.append(tok)
+            for tok, tag in tokens:
+
+                tok = tok.lower()
+                tok = regex.sub(r'[^\p{Alpha} ]', '', tok, regex.U)  # Remove any character not alphabetical or a space
+                tok = tok.strip()
+
+                if tok:
+                    # If some characters left
+                    return_tokens.append("%s_%s" % (tok, tag))
+
+        else:
+
+            for tok in tokens:
+
+                tok = tok.lower()
+                tok = regex.sub(r'[^\p{Alpha} ]', '', tok, regex.U)  # Remove any character not alphabetical or a space
+                tok = tok.strip()
+
+                if tok:
+                    # If there are some characters left
+                    return_tokens.append(tok)
 
         return return_tokens
 
@@ -163,6 +185,27 @@ def train_phrases_model(potter_files, dir_to_save, n_iter=20, vector_size=100, v
     potter_word2vec.save(os.path.join(dir_to_save, 'potter_phrases_w2v_%s.bin' % str(vector_size)))
 
 
+def train_pos_model(potter_files, dir_to_save, n_iter=20, vector_size=100, verbose=True):
+
+    potter_sents = MySentences(txt_files=potter_files,
+                               verbose=verbose,
+                               pos_tag=True)
+
+    potter_word2vec = Word2Vec(
+        sentences=potter_sents,
+        size=vector_size,
+        window=5,
+        min_count=5,
+        workers=4,
+        iter=n_iter
+    )
+
+    if not os.path.exists(dir_to_save):
+        os.mkdir(dir_to_save)
+
+    potter_word2vec.save(os.path.join(dir_to_save, 'potter_pos_w2v_%s.bin' % str(vector_size)))
+
+
 parser = argparse.ArgumentParser(description='Script for training a Word2Vec model over Harry Potter books.')
 parser.add_argument('-m', '--mode', default='simple', type=str,
                     help='What way to train model: \'simple\', \'phrases\', \'pos\', \'word_sense\'')
@@ -183,7 +226,8 @@ if __name__ == '__main__':
 
     func_to_call = {
         'simple': train_simple_model,
-        'phrases': train_phrases_model
+        'phrases': train_phrases_model,
+        'pos': train_pos_model
     }[args.mode]
 
     func_to_call(potter_files=potter_files,
@@ -191,5 +235,3 @@ if __name__ == '__main__':
                  n_iter=args.iter,
                  vector_size=args.size,
                  verbose=args.verbose)
-
-    
