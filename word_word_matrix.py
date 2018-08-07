@@ -2,14 +2,18 @@ import os
 import math
 import pickle
 import argparse
-from numpy import dot
-from numpy.linalg import norm
+import numpy as np
+from numpy.linalg import norm, svd
 from utils import MySentences, Vocabulary
 
 
-class Matrix(object):
+class WordWordMatrix(object):
     """
-    (Abstract) base class to be implemented by particular matrix implements, e.g. TermDocumentMatrix, or WordWordMatrix
+    Word-Word, or Term-Term, matrix of |V|x|V| dimensionality.
+    Each cell represents number of times row (target) word "co-occurs" in some context with column (context) word
+    in the training corpus.
+    By "co-occur" we might mean occur in the same document, but for us we mean within some customizable window size,
+    (up to sentence boundaries).
     """
 
     def __init__(self, sentences, window_size=5, min_count=1):
@@ -27,23 +31,6 @@ class Matrix(object):
         self.window_size = window_size
         self.vocab = Vocabulary(sentences=sentences, min_count=min_count)  # Initialize a map from word type to integer
         self.matrix = self._init_matrix(sentences=sentences)               # Initialize a co-occurrence word-word matrix
-
-    def _init_matrix(self, sentences):
-        """
-        Abstract method: needs to be implemented by sub-classes
-        """
-
-        raise NotImplementedError
-
-
-class WordWordMatrix(Matrix):
-    """
-    Word-Word, or Term-Term, matrix of |V|x|V| dimensionality.
-    Each cell represents number of times row (target) word "co-occurs" in some context with column (context) word
-    in the training corpus.
-    By "co-occur" we might mean occur in the same document, but for us we mean within some customizable window size,
-    (up to sentence boundaries).
-    """
 
     def _init_matrix(self, sentences):
         """
@@ -156,12 +143,25 @@ class PPMIMatrix(object):
         return weighted_matrix
 
 
+class SVDMatrix(object):
+
+    def __init__(self, matrix, k_dim=250):
+
+        self.k_dim = k_dim
+        self.matrix = self._svd_matrix(matrix=matrix.matrix)
+
+    def _svd_matrix(self, matrix):
+
+        w, sigma, c_transpose = svd(np.array(matrix))
+        return [row[:self.k_dim] for row in w.tolist()]
+
+
 def cosine_similarity(vector1, vector2):
     """
     Returns (one of the better) measures of similarity between two vectors: the cosine of the angle between them
     """
 
-    return (dot(vector1, vector2))/(norm(vector1) * norm(vector2))
+    return (np.dot(vector1, vector2))/(norm(vector1) * norm(vector2))
 
 
 def most_similar(matrix, vocab, word, top_n=5, similarity_measure=cosine_similarity):
@@ -205,7 +205,16 @@ def most_similar(matrix, vocab, word, top_n=5, similarity_measure=cosine_similar
     return sorted(best_seen, key=lambda x: x[1], reverse=True)
 
 
-def compare_raw_with_ppmi(matrix, ppmi_matrix):
+def compare_embedding_matrices(matrix, ppmi_matrix, svd_matrix):
+    """
+    Takes three word-embedding matrices:
+      - `matrix` is our raw-frequency co-occurrence count matrix
+      - `ppmi_matrix` is our PPMI weighted co-occurrence count matrix
+      - `svd_matrix` is the top-k dimensions from our SVD of `ppmi_matrix`
+
+    We look at what the most similar words for a given set list are, to see which gives the best reasonable performance
+    Warning: needs a bit of Harry Potter knowledge here
+    """
 
     words_to_compare = [
         'harry',
@@ -228,6 +237,11 @@ def compare_raw_with_ppmi(matrix, ppmi_matrix):
             print(similar)
         print
 
+        print("### Most similar wards to '%s' with SVD PPMI weighting" % wd)
+        for similar in most_similar(matrix=svd_matrix, vocab=matrix.vocab, word=wd):
+            print(similar)
+        print
+
 
 parser = argparse.ArgumentParser(description='Script for training a PPMI-weighted Word-Word matrix over Harry Potter.')
 parser.add_argument('-w', '--window_size', type=int, default=5,
@@ -238,6 +252,8 @@ parser.add_argument('-d', '--dir', type=str, default="",
                     help='Directory to save resulting matrices. If name clashes, overwrites. If missing, does not save')
 parser.add_argument('-v', '--verbose', type=bool, default=True,
                     help='Print useful information through process of training.')
+parser.add_argument('-k', '--k_dim', type=int, default=250,
+                    help='Top k-dimensions from SVD to keep; this is the size of our resulting embeddings.')
 
 if __name__ == '__main__':
 
@@ -255,11 +271,17 @@ if __name__ == '__main__':
 
     ppmi_matrix = PPMIMatrix(matrix=matrix)
 
+    svd_matrix = SVDMatrix(matrix=matrix, k_dim=args.k_dim)
+
     if args.verbose:
         print("Constructed a PPMI weighted version of the matrix.")
 
     if args.verbose:
-        compare_raw_with_ppmi(matrix=matrix, ppmi_matrix=ppmi_matrix)
+        compare_embedding_matrices(
+            matrix=matrix,
+            ppmi_matrix=ppmi_matrix,
+            svd_matrix=svd_matrix
+        )
 
     if args.dir:
         # If path to directory to save the non-default (i.e. empty string), save.
@@ -272,3 +294,6 @@ if __name__ == '__main__':
 
         with open(os.path.join(args.dir, 'ppmi_matrix.bin'), 'w') as open_f:
             pickle.dump(ppmi_matrix, open_f)
+
+        with open(os.path.join(args.dir, 'svd_matrix.bin'), 'w') as open_f:
+            pickle.dump(svd_matrix, open_f)
