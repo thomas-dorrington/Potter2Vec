@@ -6,37 +6,34 @@ from progress.bar import Bar
 
 class MySentences(object):
     """
-    Class to iterate over the sentence and tokens in the Harry Potter series, generator-style.
+    Class to iterate over the sentence and tokens in a series of text files, generator-style.
     Saves us from loading everything into memory at once.
     """
 
-    def __init__(self, txt_files, pos_tag=False, verbose=True):
+    def __init__(self, txt_files, verbose=True):
         """
         `txt_files` is a list of paths to the txt files (relative wrt. this script).
-        For the Harry Potter, this will be a list of length 7, but easily applicable to any list of text files.
+        For the Harry Potter series, this will be a list of length 7, but easily applicable to any list of text files.
 
-        If `pos_tag` is set to True, rather than just return a list of words,
-        we return a list of words paired with their associated Part of Speech tag
-
-        If `verbose` set, we output various pieces of logging information throughuout the training procedure
+        If `verbose` set, we output various pieces of logging information throughout the training procedure.
         """
 
-        self.iteration = 0
+        self.iteration = 0          # How many times we have iterated through all the text files
         self.verbose = verbose
-        self.pos_tag = pos_tag
-        self.txt_files = txt_files
+        self.txt_files = txt_files  # List of (relative) paths to text files
 
     def __iter__(self):
         """
-        `Implement iteration over class as a generator
+        Implement iteration over class generator-style
         """
 
         if self.verbose:
-            bar = Bar("Processing", max=len(self.txt_files))
             print("Starting iteration %s" % str(self.iteration))
+            bar = Bar("Processing", max=len(self.txt_files))
 
         # Shuffle order in which we present txt files to improve training
-        # Really ought to shuffle order sentences are presented, but this makes iteration like a generator harder
+        # Really ought to shuffle order sentences are presented, but this makes iterating like a generator harder
+        # Could maybe generate 20 at a time, shuffle, then yield.
         random.shuffle(self.txt_files)
 
         for f in self.txt_files:
@@ -48,13 +45,15 @@ class MySentences(object):
                     line = line.strip()
 
                     if line:
+                        # If not just whitespace
 
-                        sents = nltk.sent_tokenize(line.decode('utf8'))  # Line in text to list of sents
-                        sents = [nltk.word_tokenize(s) for s in sents]   # List of sents to list of list of tokens
+                        sents = nltk.sent_tokenize(line.decode('utf8'))  # Line in text -> list of sents
+                        sents = [nltk.word_tokenize(s) for s in sents]   # List of sents -> list of list of tokens
                         sents = [self.preprocess(s) for s in sents]      # Pre-process each token in each sent
 
                         for s in sents:
                             if s:
+                                # If non-empty list of tokens
                                 yield s
 
             if self.verbose:
@@ -72,36 +71,19 @@ class MySentences(object):
 
         For increased speed, rather than sentence segmenting, word tokenizing, and pre-processing each iteration,
         these pre-processed lists could be saved off to disk, so iteration consists solely of loading files & yielding.
-        This becomes more crucial as we do POS tagging or Word Sense Disambiguation.
         """
 
         return_tokens = []
 
-        if self.pos_tag:
+        for tok in tokens:
 
-            tokens = nltk.pos_tag(tokens)  # Returns a list of tuples: (token, POS tag)
+            tok = tok.lower()
+            tok = regex.sub(r'[^\p{Alpha} ]', '', tok, regex.U)  # Remove any character not alphabetical or a space
+            tok = tok.strip()
 
-            for tok, tag in tokens:
-
-                tok = tok.lower()
-                tok = regex.sub(r'[^\p{Alpha} ]', '', tok, regex.U)  # Remove any character not alphabetical or a space
-                tok = tok.strip()
-
-                if tok:
-                    # If some characters left
-                    return_tokens.append("%s_%s" % (tok, tag))
-
-        else:
-
-            for tok in tokens:
-
-                tok = tok.lower()
-                tok = regex.sub(r'[^\p{Alpha} ]', '', tok, regex.U)  # Remove any character not alphabetical or a space
-                tok = tok.strip()
-
-                if tok:
-                    # If there are some characters left
-                    return_tokens.append(tok)
+            if tok:
+                # If there are some characters left
+                return_tokens.append(tok)
 
         return return_tokens
 
@@ -112,10 +94,10 @@ class MyNGrams(object):
     transforming sequence of commonly occurring tokens into n-grams using `gensim.models.phrases` package.
     """
 
-    def __init__(self, txt_files, n_gram_phraser):
+    def __init__(self, txt_files, n_gram_phraser, verbose=True):
 
         self.n_gram_phraser = n_gram_phraser
-        self.sentences = MySentences(txt_files=txt_files)
+        self.sentences = MySentences(txt_files=txt_files, verbose=verbose)
 
     def __iter__(self):
 
@@ -134,6 +116,7 @@ class Vocabulary(object):
     def __init__(self, sentences, min_count=1):
         """
         `sentences` is an iterator over all the pre-processed tokens & sentences in the text to build vocab over.
+
         `min_count` is the number of times a word must occur for it to be considered an entry in the vocab.
         """
 
