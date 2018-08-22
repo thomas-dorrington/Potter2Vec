@@ -2,7 +2,9 @@ import os
 import json
 import pickle
 import argparse
+from matplotlib import pyplot
 from gensim.models import Word2Vec
+from sklearn.decomposition import PCA
 from utils import MySentences, MyNGrams
 from gensim.models.phrases import Phraser, Phrases
 
@@ -114,7 +116,7 @@ class GensimEmbeddings(object):
 
         # `sents` is the iterator we will eventually pass to the word2vec algorithm to generate word embeddings over
         # If we want to learn vectors for multi-word phrases, we will assign a different iterator to this variable name
-        sents = MySentences(txt_files=self.files, verbose=self.verbose)
+        sents = MySentences(files=self.files, verbose=self.verbose)
 
         phraser = None
         for i in range(self.phrases_size):
@@ -124,7 +126,7 @@ class GensimEmbeddings(object):
 
             phrases = Phrases(sentences=sents, min_count=5, threshold=10.0)
             phraser = Phraser(phrases_model=phrases)  # Much smaller and more efficient version of Phrases class
-            sents = MyNGrams(txt_files=self.files, n_gram_phraser=phraser, verbose=self.verbose)
+            sents = MyNGrams(files=self.files, n_gram_phraser=phraser, verbose=self.verbose)
 
         model = Word2Vec(
             sentences=sents,                 # Sentence iteration
@@ -180,6 +182,26 @@ class GensimEmbeddings(object):
             model=model['model']
         )
 
+    def plot(self, vocab=None):
+        """
+        Plots a custom vocabulary list using PCA to visualize in 2D.
+        If no vocabulary past in, default to whole vocab of model; this takes a while!
+        """
+
+        vocab = vocab if vocab is not None else self.model.wv.vocab
+
+        X = self.model[vocab]
+        pca = PCA(n_components=2)
+        result = pca.fit_transform(X)
+
+        # Create a scatter plot of the projection
+        pyplot.scatter(result[:, 0], result[:, 1])
+        for i, word in enumerate(vocab):
+            pyplot.annotate(word, xy=(result[i, 0], result[i, 1]))
+
+        # Display scatter plot
+        pyplot.show()
+
 
 parser = argparse.ArgumentParser(description='Script for training Word2Vec (skip-gram) model over Harry Potter books.')
 parser.add_argument('-a', '--algorithm', type=str, default='skip-gram', help='"skip-gram" or "cbow"')
@@ -217,3 +239,34 @@ if __name__ == '__main__':
         path_to_save=args.save
     )
 
+    test_vocab = [
+        "gryffindor",
+        "slytherin",
+        "hufflepuff",
+        "ravenclaw",
+        "hermione",
+        "harry",
+        "avada_kedavra",
+        "ron",
+        "hagrid",
+        "malfoy",
+        "dumbledore",
+        "snape",
+        "broomstick",
+        "magic",
+        "witch",
+        "wizard",
+        "muggle",
+        "witches",
+        "diagon_alley",
+        "knockturn_alley",
+        "hedwig",
+        "scabbers",
+        "buckbeak",
+        "charm",
+        "spell",
+        "curse",
+        "lumos",
+        "accio",
+        "death_eater"
+    ]

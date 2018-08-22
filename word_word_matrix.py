@@ -3,7 +3,7 @@ import math
 import pickle
 import argparse
 import numpy as np
-from numpy.linalg import norm, svd
+from numpy.linalg import svd
 from utils import MySentences, Vocabulary
 
 
@@ -16,7 +16,7 @@ class WordWordMatrix(object):
     (up to sentence boundaries).
     """
 
-    def __init__(self, sentences, window_size=5, min_count=1):
+    def __init__(self, files, window_size=5, min_count=1):
         """
         `sentences` is an iterable object, that yields sentences over our training corpus.
          We iterate over the sentences twice: once to build vocab, once to build co-occurrence matrix.
@@ -29,18 +29,20 @@ class WordWordMatrix(object):
         """
 
         self.window_size = window_size
-        self.vocab = Vocabulary(sentences=sentences, min_count=min_count)  # Initialize a map from word type to integer
-        self.matrix = self._init_matrix(sentences=sentences)               # Initialize a co-occurrence word-word matrix
+        self.vocab = Vocabulary(files=files, min_count=min_count)  # Initialize a map from word type to integer
+        self.matrix = self._init_matrix(files=files)               # Initialize a co-occurrence word-word matrix
 
-    def _init_matrix(self, sentences):
+    def _init_matrix(self, files):
         """
         Returns a |V|x|V| matrix m, where m[i][j] is the number of times the word corresponding to index i in the vocab
         co-occurs with the word corresponding to index j in the vocab.
         """
 
-        # matrix[i] returns the ith row
-        # matrix [i][j] returns the value of the cell at the ith row and jth column
+        sentences = MySentences(files=files)
+
+        # matrix[i] returns the ith row; matrix [i][j] returns the value of the cell at the ith row and jth column
         # Initialize all counts to 0.0 floats
+        # The value at each cell is the number of times the word (row i) co-occurs with the other word (column j)
         matrix = [[0.0 for col in range(len(self.vocab))] for row in range(len(self.vocab))]
 
         for sent in sentences:
@@ -84,6 +86,17 @@ class WordWordMatrix(object):
 
                     col = self.vocab[context]  # Column index corresponding to `context`
                     matrix[row][col] += 1.0
+
+        return matrix
+
+
+class TFIDFMatrix(object):
+
+    def __init__(self, matrix):
+
+        self.matrix = self._reweight_matrix(matrix=matrix.matrix)
+
+    def _reweight_matrix(self, matrix):
 
         return matrix
 
@@ -156,55 +169,6 @@ class SVDMatrix(object):
         return [row[:self.k_dim] for row in w.tolist()]
 
 
-def cosine_similarity(vector1, vector2):
-    """
-    Returns (one of the better) measures of similarity between two vectors: the cosine of the angle between them
-    """
-
-    return (np.dot(vector1, vector2))/(norm(vector1) * norm(vector2))
-
-
-def most_similar(matrix, vocab, word, top_n=5, similarity_measure=cosine_similarity):
-    """
-    Returns the `top_n` most "similar" words to `word` under the embedding model defined by `matrix`,
-    with corresponding vocabulary `vocab`.
-    `similarity_measure`
-    """
-
-    vector = matrix.matrix[vocab[word]]  # Assumes `word` in `vocab`
-
-    # `best_seen` is a list of tuples of form: (some word, similarity of it to `word`)
-    # We keep this list sorted at all times, so to insert a new word is very simple:
-    # Check if new word has a similarity greater than the word with the smallest index; if so, replace, and re-sort.
-    # There is a time-complexity trade of here: sorting at the end of each insertion has a cost,
-    # but it means we don't need to iterate over the list every time to find the smallest element.
-    # (Also makes the code much clearer)
-    best_seen = []
-
-    for other_word in vocab:
-
-        if other_word == word:
-            # A word and itself have a similarity of 1.0; not very useful
-            continue
-
-        other_vector = matrix.matrix[vocab[other_word]]
-        similarity = similarity_measure(vector, other_vector)
-
-        if len(best_seen) < top_n:
-            # Haven't found `top_n` elements yet; keep adding
-            best_seen.append((other_word, similarity))
-        else:
-            # Replace element with smallest similarity
-            if similarity > best_seen[0][1]:
-                best_seen[0] = (other_word, similarity)
-
-        # Re-sort before next-iteration
-        best_seen = sorted(best_seen, key=lambda x: x[1])
-
-    # Return in descending order of similarity for clarity
-    return sorted(best_seen, key=lambda x: x[1], reverse=True)
-
-
 def compare_embedding_matrices(matrix, ppmi_matrix, svd_matrix):
     """
     Takes three word-embedding matrices:
@@ -250,8 +214,6 @@ parser.add_argument('-c', '--min_count', type=int, default=50,
                     help='Minimum number of occurrence of tokens before counting as part of vocabulary.')
 parser.add_argument('-d', '--dir', type=str, default="",
                     help='Directory to save resulting matrices. If name clashes, overwrites. If missing, does not save')
-parser.add_argument('-v', '--verbose', type=bool, default=True,
-                    help='Print useful information through process of training.')
 parser.add_argument('-k', '--k_dim', type=int, default=250,
                     help='Top k-dimensions from SVD to keep; this is the size of our resulting embeddings.')
 
@@ -261,27 +223,17 @@ if __name__ == '__main__':
 
     potter_files = [os.path.join('data/', x) for x in os.listdir('data/')]
 
-    sents = MySentences(txt_files=potter_files, verbose=args.verbose)
-
-    matrix = WordWordMatrix(sentences=sents, window_size=args.window_size, min_count=args.min_count)
-
-    if args.verbose:
-        print("Constructed raw frequency count matrix.")
-        print("Vocabulary consists of %s entries." % str(len(matrix.vocab)))
+    matrix = WordWordMatrix(files=potter_files, window_size=args.window_size, min_count=args.min_count)
 
     ppmi_matrix = PPMIMatrix(matrix=matrix)
 
     svd_matrix = SVDMatrix(matrix=matrix, k_dim=args.k_dim)
 
-    if args.verbose:
-        print("Constructed a PPMI weighted version of the matrix.")
-
-    if args.verbose:
-        compare_embedding_matrices(
-            matrix=matrix,
-            ppmi_matrix=ppmi_matrix,
-            svd_matrix=svd_matrix
-        )
+    compare_embedding_matrices(
+        matrix=matrix,
+        ppmi_matrix=ppmi_matrix,
+        svd_matrix=svd_matrix
+    )
 
     if args.dir:
         # If path to directory to save the non-default (i.e. empty string), save.

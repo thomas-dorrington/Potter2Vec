@@ -217,7 +217,7 @@ if __name__ == '__main__':
     potter_files = [os.path.join('data/', x) for x in os.listdir('data/')]
 
     sentences = MySentences(
-        txt_files=potter_files,
+        files=potter_files,
         pos_tag=False,
         verbose=False
     )
