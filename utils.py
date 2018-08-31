@@ -1,3 +1,4 @@
+import copy
 import nltk
 import regex
 import random
@@ -8,7 +9,7 @@ from numpy.linalg import norm
 
 class DocumentNotInCollection(Exception):
     """
-    Raised if we try and get a document vector from a (possible weighted) term-document matrix
+    Raised if we try and get a document vector from a (weighted) term-document matrix
     that never existed in the training corpus of documents.
     """
     pass
@@ -16,9 +17,9 @@ class DocumentNotInCollection(Exception):
 
 class WordNotInVocabulary(Exception):
     """
-    Raised if we try and get a word vector from a (possibly weighted) co-occurrence matrix,
+    Raised if we try and get a word vector from a (weighted) co-occurrence matrix,
     either because the word does not occur in the training set at all,
-    or occurs with a frequency less than the minimum allowable threshold the VSM was trained on.
+    or occurs with a frequency less than the minimum allowable threshold the model was trained on.
     """
     pass
 
@@ -32,11 +33,11 @@ class MySentences(object):
     def __init__(self, files):
         """
         `files` is a list of paths to the text files.
-        For the Harry Potter series, this will be a list of length 7, but easily applicable to any list of text files.
+        For the Harry Potter series, this will be a list of length 7, but easily applicable to any text files.
         """
 
-        self.files = files  # List of (relative) paths to text files
-        self.iteration = 0   # How many times we have iterated through all the text files
+        self.iteration = 0             # How many times we have iterated over all the text files - used for logging
+        self.files = copy.copy(files)  # Copy so when we shuffle we don't affect any class `files` attribute
 
     def __iter__(self):
         """
@@ -60,7 +61,6 @@ class MySentences(object):
                     line = line.strip()
 
                     if line:
-                        # If line is not just whitespace
 
                         sents = nltk.sent_tokenize(line.decode('utf8'))  # Line in text      -> list of sentences
                         sents = [nltk.word_tokenize(s) for s in sents]   # List of sentences -> list of list of tokens
@@ -68,7 +68,6 @@ class MySentences(object):
 
                         for s in sents:
                             if s:
-                                # If non-empty list of tokens
                                 yield s
 
             bar.next()
@@ -79,8 +78,8 @@ class MySentences(object):
 
     def preprocess(self, tokens):
         """
-        Clean line of text before yielding for VSM training.
-        Takes a list of tokens `tokens`, and returns a pre-processed version of this list.
+        Clean line of text before yielding for training.
+        Takes a list of `tokens`, and returns a pre-processed version of this list.
 
         For increased speed, rather than sentence segmenting, word tokenizing, and pre-processing each iteration,
         these pre-processed lists could be saved off to disk, so iteration consists solely of loading files & yielding.
@@ -92,7 +91,7 @@ class MySentences(object):
 
             tok = tok.lower()
             tok = regex.sub(r'[^\p{Alpha} ]', '', tok, regex.U)  # Remove any character not alphabetical or a space
-            tok = tok.strip()
+            tok = tok.strip()                                    # Remove trailing or leading whitespace
 
             if tok:
                 # If there are some characters left
@@ -129,16 +128,17 @@ class MyNGrams(object):
 
 class Vocabulary(object):
     """
-    Class to generate and store a vocabulary over a training document corpus. Just a wrapper for a vocab dictionary.
+    Class to generate and store a vocabulary over a training document corpus.
+    After initialized, basically just a wrapper for a vocab dictionary.
     Stores a unique integer with each vocabulary word, making it easy to generate one-hot vectors,
-    or use row/column indices in a word-word matrix or term-document matrices.
+    or use as row/column indices in a word-word matrix or term-document matrices.
     """
 
     def __init__(self, files, min_count=1):
         """
-        `files` is a list of (relative) paths to text files that constitute our training document collection.
+        `files` is a list of  paths to text files that constitute our training document collection.
 
-        `min_count` is the number of times a word must occur for it to be considered an entry in the vocab.
+        `min_count` the number of times a word must occur across corpus for it to be considered an entry in the vocab.
         """
 
         self.min_count = min_count
@@ -163,8 +163,6 @@ class Vocabulary(object):
         sentences = MySentences(files=files)
 
         # Initialize a dictionary, mapping from word to its count in training corpus.
-        # The count is used to prune elements not above a certain minimum count,
-        # but is replaced with a unique integer instead after counting before returning.
         vocab = {}
 
         for sent in sentences:
@@ -192,27 +190,26 @@ def cosine_similarity(vector1, vector2):
     return (np.dot(vector1, vector2))/(norm(vector1) * norm(vector2))
 
 
-def most_similar(matrix, word, top_n=5, similarity_measure=cosine_similarity):
+def most_similar(model, word, top_n=5, similarity_measure=cosine_similarity):
     """
-    Returns the `top_n` most similar words to `word` under the vector embedding model defined by the `matrix` object.
-    `matrix` has an attribute, also called `matrix`, that is the actual matrix of numbers.
+    Returns the `top_n` most similar words to `word` under the vector embedding model defined by the `model` object.
+    `model` has an attribute, called `matrix`, that is the actual matrix of numbers.
     `similarity_measure` is the way we are defining similarity, typically cosine similarity.
     """
 
-    # The `vocab` attribute of `matrix` is a map from word to unique integer, corresponding to the row index in matrix
-    vocab = matrix.vocab
+    # The `vocab` attribute of `model` is a map from word to unique integer, corresponding to the row index in matrix
+    vocab = model.vocab
+    matrix = model.matrix
 
     if word not in vocab:
         raise WordNotInVocabulary(word)
 
-    vector = matrix.matrix[vocab[word]]
+    # Get the corresponding row vector for word
+    vector = matrix[vocab[word]]
 
     # `best_seen` is a list of tuples of form: (some word, similarity of it to `word`)
     # We keep this list sorted at all times, so to insert a new word is very simple:
-    # Check if new word has a similarity greater than the word with the smallest index; if so, replace, and re-sort.
-    # There is a time-complexity trade off here: sorting at the end of each insertion has a cost,
-    # but it means we don't need to iterate over the list every time to find the smallest element.
-    # (Also makes the code much clearer)
+    # Check if new word has a similarity greater than the word with the smallest index; if so, replace, and re-sort
     best_seen = []
 
     for other_word in vocab:
@@ -221,7 +218,7 @@ def most_similar(matrix, word, top_n=5, similarity_measure=cosine_similarity):
             # A word and itself have a similarity of 1.0; not very useful
             continue
 
-        other_vector = matrix.matrix[vocab[other_word]]
+        other_vector = matrix[vocab[other_word]]
         similarity = similarity_measure(vector, other_vector)
 
         if len(best_seen) < top_n:
@@ -237,3 +234,57 @@ def most_similar(matrix, word, top_n=5, similarity_measure=cosine_similarity):
 
     # Return in descending order of similarity for clarity
     return sorted(best_seen, key=lambda x: x[1], reverse=True)
+
+
+characters = [
+    'harry',
+    'ron',
+    'neville',
+    'hermione',
+    'ginny',
+    'luna'
+]
+
+
+teachers = [
+    'dumbledore',
+    'slughorn',
+    'snape',
+    'lupin',
+    'quirrell',
+    'umbridge',
+    'trelawney',
+    'mcgonagall',
+    'lockhart'
+]
+
+
+animals = [
+    'hedwig',
+    'crookshanks',
+    'fang',
+    'scabbers'
+]
+
+
+houses = [
+    'gryffindor',
+    'ravenclaw',
+    'slytherin',
+    'hufflepuff'
+]
+
+
+spells = [
+    'lumos',
+    'reparo',
+    'expelliarmus',
+    'stupefy',
+    'crucio',
+    'accio',
+    'protego',
+    'impedimenta',
+    'petrificus',
+    'levicorpus',
+    'imperio'
+]

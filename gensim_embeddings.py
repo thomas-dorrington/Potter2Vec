@@ -7,6 +7,7 @@ from gensim.models import Word2Vec
 from sklearn.decomposition import PCA
 from utils import MySentences, MyNGrams
 from gensim.models.phrases import Phraser, Phrases
+from scipy.cluster.hierarchy import dendrogram, linkage
 
 
 class GensimEmbeddings(object):
@@ -25,7 +26,6 @@ class GensimEmbeddings(object):
                  phrases_size=0,
                  negative_samples=5,
                  workers=4,
-                 verbose=True,
                  phraser=None,
                  model=None):
         """
@@ -81,7 +81,6 @@ class GensimEmbeddings(object):
         self.n_iter = n_iter
         self.window = window
         self.workers = workers
-        self.verbose = verbose
         self.algorithm = algorithm
         self.min_count = min_count
         self.vector_size = vector_size
@@ -116,17 +115,16 @@ class GensimEmbeddings(object):
 
         # `sents` is the iterator we will eventually pass to the word2vec algorithm to generate word embeddings over
         # If we want to learn vectors for multi-word phrases, we will assign a different iterator to this variable name
-        sents = MySentences(files=self.files, verbose=self.verbose)
+        sents = MySentences(files=self.files)
 
         phraser = None
         for i in range(self.phrases_size):
 
-            if self.verbose:
-                print("Looking for %s length token phrases ..." % str(i+2))
+            print("Looking for %s length token phrases ..." % str(i+2))
 
             phrases = Phrases(sentences=sents, min_count=5, threshold=10.0)
             phraser = Phraser(phrases_model=phrases)  # Much smaller and more efficient version of Phrases class
-            sents = MyNGrams(files=self.files, n_gram_phraser=phraser, verbose=self.verbose)
+            sents = MyNGrams(files=self.files, n_gram_phraser=phraser)
 
         model = Word2Vec(
             sentences=sents,                 # Sentence iteration
@@ -153,7 +151,6 @@ class GensimEmbeddings(object):
             'phrases_size': self.phrases_size,
             'negative_samples': self.negative_samples,
             'workers': self.workers,
-            'verbose': self.verbose,
             'phraser': self.phraser,
             'model': self.model
         }
@@ -177,12 +174,11 @@ class GensimEmbeddings(object):
             phrases_size=model['phrases_size'],
             negative_samples=model['negative_samples'],
             workers=model['workers'],
-            verbose=model['verbose'],
             phraser=model['phraser'],
             model=model['model']
         )
 
-    def plot(self, vocab=None):
+    def pca_plot(self, vocab=None):
         """
         Plots a custom vocabulary list using PCA to visualize in 2D.
         If no vocabulary past in, default to whole vocab of model; this takes a while!
@@ -202,6 +198,32 @@ class GensimEmbeddings(object):
         # Display scatter plot
         pyplot.show()
 
+    def hierarchical_cluster_plot(self, words):
+        """
+        Plots a hierarchical cluster plot for a subset of `words`
+        """
+
+        matrix = [self.model[wd] for wd in words]
+
+        index2wd = {i: wd for i, wd in enumerate(words)}
+
+        l = linkage(matrix, method='complete', metric='seuclidean')
+
+        # Calculate full dendrogram
+        pyplot.figure(figsize=(25, 10))
+        pyplot.ylabel('word')
+        pyplot.xlabel('distance')
+
+        dendrogram(
+            l,
+            orientation='left',
+            leaf_font_size=10,
+            leaf_label_func=lambda v: str(index2wd[v])
+        )
+
+        # Display plot
+        pyplot.show()
+
 
 parser = argparse.ArgumentParser(description='Script for training Word2Vec (skip-gram) model over Harry Potter books.')
 parser.add_argument('-a', '--algorithm', type=str, default='skip-gram', help='"skip-gram" or "cbow"')
@@ -212,7 +234,6 @@ parser.add_argument('-d', '--dim', default=100, type=int, help='Size of resultin
 parser.add_argument('-p', '--phrases', type=int, default=0, help='How large are multi-word token phrases.')
 parser.add_argument('-n', '--negative', type=int, default=5, help='How many negative examples per target word.')
 parser.add_argument('-t', '--threads', type=int, default=4, help='How many worker threads to use during training.')
-parser.add_argument('-v', '--verbose', type=bool, default=True, help='Print logging information during training.')
 parser.add_argument('-s', '--save', type=str, required=True, help='Path to save resulting models.')
 
 
@@ -231,8 +252,7 @@ if __name__ == '__main__':
         vector_size=args.dim,
         phrases_size=args.phrases,
         negative_samples=args.negative,
-        workers=args.threads,
-        verbose=args.verbose
+        workers=args.threads
     )
 
     embeddings.save(

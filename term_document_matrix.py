@@ -1,5 +1,7 @@
 import os
+import math
 import pickle
+import argparse
 from utils import MySentences, Vocabulary, WordNotInVocabulary, DocumentNotInCollection
 
 
@@ -10,21 +12,21 @@ class TermDocumentMatrix(object):
     Each row corresponds to a word in the vocab, and each column a document in the document training collection.
     Thus, each cell represents the number of times the word (specified by row) occurs in the document
     (specified by the column).
-    This allows us to have vectors for both documents (the columns: 1x|V|) and words (the rows: 1x|D|).
-    Originated in the task of document retrieval, from the field of Information Retrieval.
+    This allows us to have vectors for both documents (the columns, 1x|V|) and words (the rows, 1x|D|).
     """
 
     def __init__(self, files, min_count=1, vocab=None, matrix=None):
         """
         `files` is a list of paths to text files that represent our document collection.
+        There is one column for every document (i.e. file) in this list.
 
-        `min_count` the number of times a word must occur in all the text for it to be considered an entry in the vocab.
+        `min_count` the number of times a word must occur across corpus for it to be considered an entry in the vocab.
 
         `vocab` and `matrix` can be non-None if we are loading from a file,
         otherwise we initialize them from `files` and `min_count`
         """
 
-        self.files = files
+        self.files = sorted(files)  # Need to sort so columns are consistent across different instances of this class
         self.min_count = min_count
 
         if matrix is None and vocab is None:
@@ -73,15 +75,15 @@ class TermDocumentMatrix(object):
         """
 
         try:
-            self.get_word_vector(word=item)
+            return self.get_word_vector(word=item)
         except WordNotInVocabulary:
             pass
 
-        self.get_document_vector(f=item)
+        return self.get_document_vector(f=item)
 
     def get_word_vector(self, word):
         """
-        Get the corresponding row vector for this `word`
+        Get the corresponding row vector for this `word`.
         The unique integer it is associated with in `self.vocab` is the index of the row to look up.
         """
 
@@ -93,7 +95,7 @@ class TermDocumentMatrix(object):
     def get_document_vector(self, f):
         """
         Get the corresponding column vector for this `file`.
-        It must match excctly the file in `self.files`, so if it was originally trained with relative paths
+        It must match exactly the file in `self.files`, so if it was originally trained with relative paths
         to where the current directory was for the script, it must match that.
         The index of `file` in `self.files` is the index of the column to look up.
         """
@@ -112,8 +114,7 @@ class TermDocumentMatrix(object):
         """
 
         # matrix[i] returns the ith row; matrix [i][j] returns the value of the cell at the ith row and jth column
-        # Initialize all counts to 0.0 floats
-        # The value at each cell is the number of times the word (row i) occurs in the document (column j)
+        # Initialize all counts to 0.0
         matrix = [[0.0 for col in range(len(self.files))] for row in range(len(self.vocab))]
 
         for col, f in enumerate(self.files):
@@ -135,10 +136,48 @@ class TermDocumentMatrix(object):
 
         return matrix
 
+    @staticmethod
+    def log_term_frequency(term_freq):
+
+        return (1.0 + math.log(term_freq, 10)) if term_freq > 0.0 else 0.0
+
+    def tf_idf_reweight_matrix(self):
+        """
+        Takes a term-document matrix, and re-weights each entry based on TF-IDF weighting scheme.
+        Because raw frequency counts are very skewed and not very discriminative, TF-IDF takes into account:
+            - the frequency of the individual word in the document (term frequency)
+            - how many documents in the collection does it occur in (inverse document frequency)
+        """
+
+        N = float(len(self.files))  # Number of documents in collection
+
+        # Firstly, calculate the number of documents each term in the vocabulary occurs in (document frequency)
+        # Then inverse by total number of document for final inverse-document-frequency
+        idf = [N/sum([0.0 if col == 0.0 else 1.0 for col in row]) for row in self.matrix]
+
+        # Tf-idf is then the product of term frequency & inverse document frequency
+        matrix = [[idf[i] * self.log_term_frequency(col) for col in self.matrix[i]] for i in range(len(self.vocab))]
+
+        # Overwrite current matrix attribute with new re-weighted matrix
+        self.matrix = matrix
+
+
+parser = argparse.ArgumentParser(description='Script for training a term-document matrix over Harry Potter.')
+parser.add_argument('-c', '--count', default=20, type=int, help='Minimum count of frequency for valid tokens.')
+parser.add_argument('-s', '--save', required=True, type=str, help='Path to save resulting model.')
+
 
 if __name__ == '__main__':
 
+    args = parser.parse_args()
+
     potter_files = [os.path.join('data/', x) for x in os.listdir('data/')]
 
-    term_doc_matrix = TermDocumentMatrix(files=potter_files, min_count=20)
-    term_doc_matrix.save('test.bin')
+    term_doc_matrix = TermDocumentMatrix(
+        files=potter_files,
+        min_count=args.count
+    )
+
+    term_doc_matrix.save(
+        path_to_model=args.save
+    )

@@ -4,46 +4,102 @@ import pickle
 import argparse
 import numpy as np
 from numpy.linalg import svd
-from utils import MySentences, Vocabulary
+from utils import MySentences, Vocabulary, WordNotInVocabulary
 
 
 class WordWordMatrix(object):
     """
-    Word-Word, or Term-Term, matrix of |V|x|V| dimensionality.
+    Word-word, or term-context, matrix of |V|x|V| dimensionality.
     Each cell represents number of times row (target) word "co-occurs" in some context with column (context) word
     in the training corpus.
     By "co-occur" we might mean occur in the same document, but for us we mean within some customizable window size,
     (up to sentence boundaries).
     """
 
-    def __init__(self, files, window_size=5, min_count=1):
+    def __init__(self, files, window_size=5, min_count=1, vocab=None, matrix=None):
         """
-        `sentences` is an iterable object, that yields sentences over our training corpus.
-         We iterate over the sentences twice: once to build vocab, once to build co-occurrence matrix.
+        `files` is a list of paths to text files that represent our document collection.
 
-        `window_size` is how far to look either side of the row (target) word for co-occuring column (context) words.
-         Large window sizes favor semantic relationships; smaller window sizes syntactic relationships.
+        `window_size` is how far to look either side of the row (target) word for co-occurring column (context) words.
+         Larger window sizes favor more semantic/topical relationships;
+         smaller window sizes favor more syntactic/functional relationships.
 
-        `min_count` is the number of times a word must occur for it to be considered an entry in the vocab.
-         Larger number significantly speeds up run-time.
+        `min_count` the number of times a word must occur across corpus for it to be considered an entry in the vocab.
+
+        `vocab` and `matrix` can be non-None if we are loading from a file,
+        otherwise we initialize them from `files` and `min_count`
         """
 
+        self.files = sorted(files)
+        self.min_count = min_count
         self.window_size = window_size
-        self.vocab = Vocabulary(files=files, min_count=min_count)  # Initialize a map from word type to integer
-        self.matrix = self._init_matrix(files=files)               # Initialize a co-occurrence word-word matrix
 
-    def _init_matrix(self, files):
+        if matrix is None and vocab is None:
+            self.vocab = Vocabulary(files=self.files, min_count=self.min_count)
+            self.matrix = self._init_matrix()
+        else:
+            self.vocab = vocab
+            self.matrix = matrix
+
+    @staticmethod
+    def load(path_to_model):
+        """
+        Load a pickle saved model from file path `path_to_model`
+        """
+
+        with open(path_to_model, 'r') as open_f:
+            model = pickle.load(open_f)
+
+        return WordWordMatrix(
+            files=model['files'],
+            window_size=model['window_size'],
+            min_count=model['min_count'],
+            vocab=model['vocab'],
+            matrix=model['matrix']
+        )
+
+    def save(self, path_to_model):
+        """
+        Save as a pickle model under file path `path_to_model`
+        """
+
+        model = {
+            'files': self.files,
+            'window_size': self.window_size,
+            'min_count': self.min_count,
+            'vocab': self.vocab,
+            'matrix': self.matrix
+        }
+
+        with open(path_to_model, 'w') as open_f:
+            pickle.dump(model, open_f)
+
+    def __getitem__(self, item):
+
+        return self.get_word_vector(word=item)
+
+    def get_word_vector(self, word):
+        """
+        Get the corresponding row vector for this `word`.
+        The unique integer it is associated with in `self.vocab` is the index of the row to look up.
+        """
+
+        if word not in self.vocab:
+            raise WordNotInVocabulary(word)
+
+        return self.matrix[self.vocab[word]]
+
+    def _init_matrix(self):
         """
         Returns a |V|x|V| matrix m, where m[i][j] is the number of times the word corresponding to index i in the vocab
-        co-occurs with the word corresponding to index j in the vocab.
+        co-occurs with the word corresponding to index j in the vocab, in a window specified by `self.window_size`
         """
-
-        sentences = MySentences(files=files)
 
         # matrix[i] returns the ith row; matrix [i][j] returns the value of the cell at the ith row and jth column
         # Initialize all counts to 0.0 floats
-        # The value at each cell is the number of times the word (row i) co-occurs with the other word (column j)
         matrix = [[0.0 for col in range(len(self.vocab))] for row in range(len(self.vocab))]
+
+        sentences = MySentences(files=self.files)
 
         for sent in sentences:
 
@@ -89,71 +145,58 @@ class WordWordMatrix(object):
 
         return matrix
 
-
-class TFIDFMatrix(object):
-
-    def __init__(self, matrix):
-
-        self.matrix = self._reweight_matrix(matrix=matrix.matrix)
-
-    def _reweight_matrix(self, matrix):
-
-        return matrix
-
-
-class PPMIMatrix(object):
-    """
-    Takes a Matrix object, e.g. word-word matrix or term-document matrix,
-    and re-weights cell values based on PPMI weighting scheme.
-    This is important because raw frequencies are very skewed and not discriminative.
-    For example, words like 'the', 'it', 'they' occur frequently in the context of all sorts of words,
-    but don't really have any discriminating power to inform us what the word actually means.
-    """
-
-    def __init__(self, matrix):
+    def ppmi_reweight_matrix(self, smooth_distribution=1.0):
         """
-        `matrix` is a Matrix object, with a field also called `matrix` that is the actual array of array of numbers.
+        Re-weights cell values based on PPMI weighting scheme.
+        This is important because raw frequencies are very skewed and not discriminative.
+        For example, words like 'the', 'it', 'they' occur frequently in the context of all sorts of words,
+        but don't really have any discriminating power to inform us what the word actually means.
+
+        Because PMI favors very rare words, we smooth unigram context distribution.
+        `smooth_distribution` controls this amount of smoothing. Default (no smoothing) = 1.0. Most common value = 0.75
         """
 
-        self.matrix = self._reweight_matrix(matrix=matrix.matrix)
+        rows = len(self.matrix)
+        cols = len(self.matrix[0])  # Assumes rectangular matrix
 
-    def _reweight_matrix(self, matrix):
-        """
-        Takes an array of array of numbers to re-weight based on PPMI weighting scheme
-        """
-
-        rows = len(matrix)
-        cols = len(matrix[0])  # Assumes rectangular matrix
-
-        # Initialize a zero-matrix the same size as the original `matrix`
+        # Initialize a zero-matrix the same size as the original `self.matrix`
         weighted_matrix = [[0.0 for col in range(cols)] for row in range(rows)]
 
         # Normalization sum over all cells
-        normalization_constant = sum([col for row in matrix for col in row])
+        N = sum([col for row in self.matrix for col in row])
 
-        # Pre-compute the normalization constant per-row: map from row number to sum of that rows' elements
-        row_normalization = {i: sum(matrix[i])/normalization_constant for i in range(rows)}
+        # Probability of target word, keyed row-index: probability = sum of row's elements / normalizing N
+        word_probability = [sum(self.matrix[i])/N for i in range(rows)]
 
-        # Pre-compute normalization constant per-column: map from column number to sum of that columns' elements
-        col_normalization = {j: sum([row[j] for row in matrix])/normalization_constant for j in range(cols)}
+        # Sum over context counts (i.e. sum of columns), to the power of `smooth_distribution`
+        smoothed_context_counts = 0.0
+        for j in range(cols):
+            smoothed_context_counts += sum([row[j] for row in self.matrix]) ** smooth_distribution
+
+        # Probability of target word, keyed by column-index: probability = sum of column's elements / normalizing N
+        # (potentially smoothed)
+        context_probability = [
+            (sum([row[j] for row in self.matrix]) ** smooth_distribution)/smoothed_context_counts
+            for j in range(cols)
+        ]
 
         for i in range(rows):
             for j in range(cols):
 
-                p_i_j = matrix[i][j]/normalization_constant
+                p_ij = self.matrix[i][j]/N
 
-                if p_i_j == 0.0:
+                if p_ij == 0.0:
                     # Ignore, and keep initialized 0.0 value in entry
                     continue
 
-                p_i = row_normalization[i]
-                p_j = col_normalization[j]
+                p_i = word_probability[i]
+                p_j = context_probability[j]
 
-                pmi = math.log(p_i_j/(p_i * p_j), 2)
+                pmi = math.log(p_ij/(p_i * p_j), 2)
 
-                weighted_matrix[i][j] = pmi if pmi > 0.0 else 0.0  # Positive PMI (PPMI)
+                weighted_matrix[i][j] = max(pmi, 0.0)  # Positive PMI (PPMI)
 
-        return weighted_matrix
+        self.matrix = weighted_matrix
 
 
 class SVDMatrix(object):
@@ -169,53 +212,11 @@ class SVDMatrix(object):
         return [row[:self.k_dim] for row in w.tolist()]
 
 
-def compare_embedding_matrices(matrix, ppmi_matrix, svd_matrix):
-    """
-    Takes three word-embedding matrices:
-      - `matrix` is our raw-frequency co-occurrence count matrix
-      - `ppmi_matrix` is our PPMI weighted co-occurrence count matrix
-      - `svd_matrix` is the top-k dimensions from our SVD of `ppmi_matrix`
+parser = argparse.ArgumentParser(description='Script for training a term-context matrix over Harry Potter.')
+parser.add_argument('-w', '--window', default=5, type=int, help='Size of window to base co-occurrence counts on.')
+parser.add_argument('-c', '--count', default=20, type=int, help='Minimum count of frequency for valid tokens.')
+parser.add_argument('-s', '--save', required=True, type=str, help='Path to save resulting model.')
 
-    We look at what the most similar words for a given set list are, to see which gives the best reasonable performance
-    Warning: needs a bit of Harry Potter knowledge here
-    """
-
-    words_to_compare = [
-        'harry',
-        'wand',
-        'spell',
-        'school',
-        'voldemort',
-        'wizard'
-    ]
-
-    for wd in words_to_compare:
-
-        print("### Most similar words to '%s' with raw frequencies" % wd)
-        for similar in most_similar(matrix=matrix, vocab=matrix.vocab, word=wd):
-            print(similar)
-        print
-
-        print("### Most similar words to '%s' with PPMI weighting" % wd)
-        for similar in most_similar(matrix=ppmi_matrix, vocab=matrix.vocab, word=wd):
-            print(similar)
-        print
-
-        print("### Most similar wards to '%s' with SVD PPMI weighting" % wd)
-        for similar in most_similar(matrix=svd_matrix, vocab=matrix.vocab, word=wd):
-            print(similar)
-        print
-
-
-parser = argparse.ArgumentParser(description='Script for training a PPMI-weighted Word-Word matrix over Harry Potter.')
-parser.add_argument('-w', '--window_size', type=int, default=5,
-                    help='Size of window to based co-occurrence counts on.')
-parser.add_argument('-c', '--min_count', type=int, default=50,
-                    help='Minimum number of occurrence of tokens before counting as part of vocabulary.')
-parser.add_argument('-d', '--dir', type=str, default="",
-                    help='Directory to save resulting matrices. If name clashes, overwrites. If missing, does not save')
-parser.add_argument('-k', '--k_dim', type=int, default=250,
-                    help='Top k-dimensions from SVD to keep; this is the size of our resulting embeddings.')
 
 if __name__ == '__main__':
 
@@ -223,29 +224,12 @@ if __name__ == '__main__':
 
     potter_files = [os.path.join('data/', x) for x in os.listdir('data/')]
 
-    matrix = WordWordMatrix(files=potter_files, window_size=args.window_size, min_count=args.min_count)
-
-    ppmi_matrix = PPMIMatrix(matrix=matrix)
-
-    svd_matrix = SVDMatrix(matrix=matrix, k_dim=args.k_dim)
-
-    compare_embedding_matrices(
-        matrix=matrix,
-        ppmi_matrix=ppmi_matrix,
-        svd_matrix=svd_matrix
+    word_word_matrix = WordWordMatrix(
+        files=potter_files,
+        window_size=args.window,
+        min_count=args.count
     )
 
-    if args.dir:
-        # If path to directory to save the non-default (i.e. empty string), save.
-
-        if not os.path.exists(args.dir):
-            os.mkdir(args.dir)
-
-        with open(os.path.join(args.dir, 'matrix.bin'), 'w') as open_f:
-            pickle.dump(matrix, open_f)
-
-        with open(os.path.join(args.dir, 'ppmi_matrix.bin'), 'w') as open_f:
-            pickle.dump(ppmi_matrix, open_f)
-
-        with open(os.path.join(args.dir, 'svd_matrix.bin'), 'w') as open_f:
-            pickle.dump(svd_matrix, open_f)
+    word_word_matrix.save(
+        path_to_model=args.save
+    )
