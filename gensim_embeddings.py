@@ -26,7 +26,7 @@ class GensimEmbeddings(object):
                  phrases_size=0,
                  negative_samples=5,
                  workers=4,
-                 phraser=None,
+                 phrasers=None,
                  model=None):
         """
         `files` is a list of (relative) paths to a series of text files to generate embeddings over.
@@ -72,9 +72,7 @@ class GensimEmbeddings(object):
         This is a more efficient way of training than a full-blown soft-max layer.
         Hierarchical soft-max would be the alternative, but we follow blog's material and use NEG.
 
-        It is possible to load one of these pre-trained models from disk,
-        in which case both `model` and `phraser` will be None.
-        If `model` is not None, but `phraser` is, that means we trained a model just over single tokens, not phrases.
+        It is possible to load pre-trained models from disk, in which case `model` and `phrasers` will be non-None.
         """
 
         self.files = files
@@ -87,11 +85,11 @@ class GensimEmbeddings(object):
         self.phrases_size = phrases_size
         self.negative_samples = negative_samples
 
-        if phraser is None and model is None:
-            self.model, self.phraser = self._train_model()
+        if phrasers is None and model is None:
+            self.model, self.phrasers = self._train_model()
         else:
             self.model = model
-            self.phraser = phraser
+            self.phrasers = phrasers
 
     def __repr__(self):
         """
@@ -114,17 +112,23 @@ class GensimEmbeddings(object):
     def _train_model(self):
 
         # `sents` is the iterator we will eventually pass to the word2vec algorithm to generate word embeddings over
-        # If we want to learn vectors for multi-word phrases, we will assign a different iterator to this variable name
+        # If we want to learn vectors for multi-word phrases, we will assign a different iterator to this variable name.
         sents = MySentences(files=self.files)
 
-        phraser = None
+        # List to accumulate Phraser objects that successively look for longer collocations.
+        # They need to be applied one after the other, starting at the beginning, to build longer chains of words.
+        phrasers = []
+
         for i in range(self.phrases_size):
 
-            print("Looking for %s length token phrases ..." % str(i+2))
+            print("\nLooking for length %s collocations ..." % str(i+2))
 
             phrases = Phrases(sentences=sents, min_count=5, threshold=10.0)
-            phraser = Phraser(phrases_model=phrases)  # Much smaller and more efficient version of Phrases class
-            sents = MyNGrams(files=self.files, n_gram_phraser=phraser)
+            phrasers.append(Phraser(phrases_model=phrases))
+
+            sents = MyNGrams(files=self.files, n_gram_phrasers=phrasers)
+
+        print("\nTraining model for %s iterations ..." % str(self.n_iter))
 
         model = Word2Vec(
             sentences=sents,                 # Sentence iteration
@@ -134,10 +138,10 @@ class GensimEmbeddings(object):
             workers=self.workers,            # How many threads to train model
             negative=self.negative_samples,  # How many negative sample to use
             size=self.vector_size,           # Size of resulting embeddings
-            sg=1 if self.algorithm == 'skip-gram' else 0
+            sg=1 if self.algorithm == 'skip-gram' else 0  # Skip-gram or CBOW
         )
 
-        return model, phraser
+        return model, phrasers
 
     def save(self, path_to_save):
 
@@ -151,7 +155,7 @@ class GensimEmbeddings(object):
             'phrases_size': self.phrases_size,
             'negative_samples': self.negative_samples,
             'workers': self.workers,
-            'phraser': self.phraser,
+            'phrasers': self.phrasers,
             'model': self.model
         }
 
@@ -174,7 +178,7 @@ class GensimEmbeddings(object):
             phrases_size=model['phrases_size'],
             negative_samples=model['negative_samples'],
             workers=model['workers'],
-            phraser=model['phraser'],
+            phrasers=model['phrasers'],
             model=model['model']
         )
 

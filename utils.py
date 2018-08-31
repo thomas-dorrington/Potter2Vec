@@ -111,19 +111,24 @@ class MyNGrams(object):
     We are treating these commonly occurring n-grams as individual tokens, each with their own vector embedding.
     """
 
-    def __init__(self, files, n_gram_phraser):
+    def __init__(self, files, n_gram_phrasers):
         """
-        `n_gram_phraser` is a `gensim.models.phrases.Phraser` object.
-        While a `Phrases` object would also work in this setting, a Phraser is much more efficient, time and space wise.
+        `n_gram_phrasers` is a list of `gensim.models.phrases.Phraser` objects.
+        While a `Phrases` object would also work in this setting, a Phraser is much more efficient, time and space wise
+        Each object incrementally joins collocations, so a list of `n` Phraser objects looks for `n+1` word-length MWEs.
+        The first object in the list might transform neighbouring occurrences of "Harry" and "James" to "Harry_James",
+        and the second object in the list transform "Harry_James" and "Potter" to "Harry_James_Potter"
         """
 
-        self.n_gram_phraser = n_gram_phraser
+        self.n_gram_phrasers = n_gram_phrasers
         self.sentences = MySentences(files=files)
 
     def __iter__(self):
 
         for s in self.sentences:
-            yield self.n_gram_phraser[s]
+            for phraser in self.n_gram_phrasers:
+                s = phraser[s]
+            yield s
 
 
 class Vocabulary(object):
