@@ -127,6 +127,7 @@ class MyNGrams(object):
 
         for s in self.sentences:
             for phraser in self.n_gram_phrasers:
+                # Convert adjacent words into collocations, incrementally if more than one Phraser
                 s = phraser[s]
             yield s
 
@@ -165,6 +166,8 @@ class Vocabulary(object):
         Build a vocabulary, i.e. a mapping from (unique) word type to (unique) integer.
         """
 
+        print("Building vocab ...")
+
         sentences = MySentences(files=files)
 
         # Initialize a dictionary, mapping from word to its count in training corpus.
@@ -183,7 +186,85 @@ class Vocabulary(object):
                 new_vocab[tok] = i
                 i += 1
 
+        print("Constructed vocabulary.\n")
+
         return new_vocab
+
+
+class MyTargetContextPairs(object):
+    """
+    Iterates over text files to produce pairs of (target word, context words) for training NNLM models.
+    Use MySentences class to iterate over tokens and sentences,
+    and Vocabulary class to remove rare words (before creating context windows).
+    """
+
+    def __init__(self, files, min_count=1, before_window=2, after_window=2):
+        """
+        `files` is a list of paths to text files to return (target, context) word pairs over.
+
+        `min_count` is the minimum frequency of a token across the corpus to consider it in the vocabulary.
+        This is used to initialize a vocabulary object over `files`: we ignore all tokens not in the vocabulary.
+        We remove these tokens before creating context windows, narrowing the distance between legitimate tokens.
+
+        `before_window` and `after_window` are the number of words either side of the target word to look for.
+        Usually the window is symmetric either side, if training word2vec models for example,
+        but if we're training for language modelling, we only use words before to predict the target (next) word.
+        """
+
+        self.after_window = after_window
+        self.before_window = before_window
+        self.sentences = MySentences(files=files)
+        self.vocab = Vocabulary(files=files, min_count=min_count)
+
+    def __iter__(self):
+
+        for sent in self.sentences:
+
+            print(sent)
+            print
+
+            for i, target in enumerate(sent):
+                # We yield one (target, context) pair for each target word
+                # The context element in the pair is a list of words either side of the target word
+
+                if target not in self.vocab:
+                    continue
+
+                # Keep looking for context words before target word until we either reach beginning of the sentence,
+                # or we have more than we are looking for (specified by `self.before_window`)
+                # If token not in vocabulary, we skip, ultimately increasing effective size of window.
+                j = 1
+                words_before = []
+                while len(words_before) != self.before_window:
+
+                    pos = i - j
+                    if pos < 0:
+                        # No tokens before beginning of sentence
+                        break
+
+                    context = sent[pos]
+                    if context in self.vocab:
+                        words_before.append(context)
+
+                    j += 1
+
+                # Do same for context words after target word
+                j = 1
+                words_after = []
+                while len(words_after) != self.after_window:
+
+                    pos = i + j
+                    if pos >= len(sent):
+                        # No tokens after end of sentence
+                        break
+
+                    context = sent[pos]
+                    if context in self.vocab:
+                        words_after.append(context)
+
+                    j += 1
+
+                yield (target, list(reversed(words_before)) + words_after)
 
 
 def cosine_similarity(vector1, vector2):
