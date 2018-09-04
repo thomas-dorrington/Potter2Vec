@@ -3,7 +3,6 @@ import math
 import pickle
 import argparse
 import numpy as np
-from numpy.linalg import svd
 from utils import MySentences, Vocabulary, WordNotInVocabulary
 
 
@@ -198,37 +197,24 @@ class WordWordMatrix(object):
 
         self.matrix = weighted_matrix
 
-
-class SVDMatrix(object):
-    """
-    A form of dimensionality-reduction from our sparse, long, co-occurrence-based count vectors.
-    Decompose X co-occurrence matrix into product of three matrices:
-      - W, an orthonormal matrix of left singular vectors as columns; the rows are our resulting word vectors
-      - Sigma, a diagonal matrix of singular values
-      - C (transpose), an orthonormal matrix of right singular vectors as columns.
-    """
-
-    def __init__(self, model, k_dim=250):
+    def svd_truncate(self, k_dim=250):
         """
-        Takes a `model`, with `matrix` and `vocab` attributes, and performs dimensionality-reduction on `model.matrix`
-        to represent word vectors as short, dense vectors.
+        A form of dimensionality-reduction from our sparse, long, co-occurrence based count vectors.
+        Decompose (possibly weighted) co-occurrence matrix `self.matrix` into product of three matrices:
+          - W, an orthonormal matrix of left singular vectors as columns.
+          - Sigma, a diagonal matrix of singular values.
+          - C (transpose), an orthonormal matrix of right singular vectors as columns.
 
-        `k_dim` is the amount by which to truncate matrices resulting from SVD.
+        We then truncate the rows of W to `k_dim`, and use the resulting vectors as our short, dense word vectors.
         """
-
-        self.k_dim = k_dim
-        self.vocab = model.vocab
-        self.matrix = self._svd_matrix(matrix=model.matrix)
-
-    def _svd_matrix(self, matrix):
 
         # We want reduced SVD, not full SVD.
         # Reduced SVD ensures width of W equals height of Sigma,
-        # by discarding orthonormal column vectors from W that do not correspond to diagonal value
-        w, sigma, c_transpose = svd(np.array(matrix), full_matrices=False)
+        # by discarding orthonormal column vectors from W that do not correspond to diagonal values
+        w, sigma, c_transpose = np.linalg.svd(np.array(self.matrix), full_matrices=False)
 
         # Truncate each row in W, and return resulting matrix (list of list of numbers)
-        return [row[:self.k_dim] for row in w.tolist()]
+        self.matrix = [row[:k_dim] for row in w.tolist()]
 
 
 parser = argparse.ArgumentParser(description='Script for training a term-context matrix over Harry Potter.')
