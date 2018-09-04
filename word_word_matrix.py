@@ -200,15 +200,34 @@ class WordWordMatrix(object):
 
 
 class SVDMatrix(object):
+    """
+    A form of dimensionality-reduction from our sparse, long, co-occurrence-based count vectors.
+    Decompose X co-occurrence matrix into product of three matrices:
+      - W, an orthonormal matrix of left singular vectors as columns; the rows are our resulting word vectors
+      - Sigma, a diagonal matrix of singular values
+      - C (transpose), an orthonormal matrix of right singular vectors as columns.
+    """
 
-    def __init__(self, matrix, k_dim=250):
+    def __init__(self, model, k_dim=250):
+        """
+        Takes a `model`, with `matrix` and `vocab` attributes, and performs dimensionality-reduction on `model.matrix`
+        to represent word vectors as short, dense vectors.
+
+        `k_dim` is the amount by which to truncate matrices resulting from SVD.
+        """
 
         self.k_dim = k_dim
-        self.matrix = self._svd_matrix(matrix=matrix.matrix)
+        self.vocab = model.vocab
+        self.matrix = self._svd_matrix(matrix=model.matrix)
 
     def _svd_matrix(self, matrix):
 
-        w, sigma, c_transpose = svd(np.array(matrix))
+        # We want reduced SVD, not full SVD.
+        # Reduced SVD ensures width of W equals height of Sigma,
+        # by discarding orthonormal column vectors from W that do not correspond to diagonal value
+        w, sigma, c_transpose = svd(np.array(matrix), full_matrices=False)
+
+        # Truncate each row in W, and return resulting matrix (list of list of numbers)
         return [row[:self.k_dim] for row in w.tolist()]
 
 
