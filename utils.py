@@ -139,17 +139,40 @@ class Vocabulary(object):
     After initialized, basically just a wrapper for a vocab dictionary.
     Stores a unique integer with each vocabulary word, making it easy to generate one-hot vectors,
     or use as row/column indices in a word-word matrix or term-document matrices.
+
+    `to_json` and `from_json` allow us to save and load Vocabulary objects from saved pickle models,
+    along side (neural) Network objects.
     """
 
-    def __init__(self, files, min_count=1):
+    def __init__(self, files, min_count=1, vocab=None):
         """
         `files` is a list of  paths to text files that constitute our training document collection.
 
         `min_count` the number of times a word must occur across corpus for it to be considered an entry in the vocab.
+
+        `vocab` is non-None if we are loading from disk. Otherwise we compute & initialize from `files`
         """
 
+        self.files = files
         self.min_count = min_count
-        self.vocab = self._build_vocab(files=files)
+        self.vocab = self._build_vocab() if vocab is None else vocab
+
+    @staticmethod
+    def from_json(loaded_vocab):
+
+        return Vocabulary(
+            files=loaded_vocab['files'],
+            min_count=loaded_vocab['min_count'],
+            vocab=loaded_vocab['vocab']
+        )
+
+    def to_json(self):
+
+        return {
+            'files': self.files,
+            'min_count': self.min_count,
+            'vocab': self.vocab
+        }
 
     def __len__(self):
         return len(self.vocab)
@@ -162,14 +185,14 @@ class Vocabulary(object):
             # Sort on values (i.e. unique increasing integers)
             yield k
 
-    def _build_vocab(self, files):
+    def _build_vocab(self):
         """
         Build a vocabulary, i.e. a mapping from (unique) word type to (unique) integer.
         """
 
         print("Building vocab ...")
 
-        sentences = MySentences(files=files)
+        sentences = MySentences(files=self.files)
 
         # Initialize a dictionary, mapping from word to its count in training corpus.
         vocab = {}

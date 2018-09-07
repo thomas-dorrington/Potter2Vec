@@ -43,7 +43,7 @@ class Network(object):
      Allows us to train such a network in a supervised fashion, with methods for loading and saving models.
      """
 
-    def __init__(self, layers, mini_batch_size):
+    def __init__(self, layers, vocab, mini_batch_size):
         """
         Takes a list of `layers` describing the network architecture (e.g. EmbeddingLayer, SoftmaxLayer, etc.)
 
@@ -51,8 +51,12 @@ class Network(object):
         Once done training, we can only predict on `mini_batch_size` number of examples at a time.
         To predict on 1 examples at a time, say, would need to save model and load it again with a different batch size,
         so the tensor dimensions in the computation graph are appropriate.
+
+        We save a `vocab` object along side the network, so we know how to embed words into their one-hot vectors,
+        and can ultimately go all the way from text to predicting the next word.
         """
 
+        self.vocab = vocab
         self.layers = layers
         self.mini_batch_size = mini_batch_size
 
@@ -90,6 +94,7 @@ class Network(object):
 
         return Network(
             layers=[layer_class_from_string(layer['type']).from_json(layer) for layer in model['layers']],
+            vocab=Vocabulary.from_json(model['vocab']),
             mini_batch_size=mini_batch_size if mini_batch_size is not None else model['mini_batch_size']
         )
 
@@ -100,6 +105,7 @@ class Network(object):
 
         model = {
             'layers': [layer.to_json() for layer in self.layers],
+            'vocab': self.vocab.to_json(),
             'mini_batch_size': self.mini_batch_size
         }
 
@@ -223,7 +229,7 @@ class Network(object):
                 train_mb(train_x, train_y)
                 mini_batch_index += 1
 
-            print("Finished training epoch {0}, with {1} mini-batches".format(epoch, mini_batch_index))
+            print("Finished training epoch {0}, with {1} mini-batches\n".format(epoch, mini_batch_index))
 
             # After training from all mini-batches in one epoch, look at test & validation statistics
             validation_accuracy = np.mean([mb_accuracy(x, y) for x, y in validate_iterator])
@@ -236,7 +242,7 @@ class Network(object):
                 print("This is the best validation accuracy to date.")
 
                 best_test_accuracy = np.mean([mb_accuracy(x, y) for x, y in test_iterator])
-                print('The corresponding test accuracy for this epoch is {0:.2%}'.format(best_test_accuracy))
+                print('The corresponding test accuracy for this epoch is {0:.2%}\n'.format(best_test_accuracy))
 
         print("Finished training network.")
         print("Best validation accuracy of {0:.2%} obtained at end of epoch {1}".format(best_validation_accuracy,
@@ -567,7 +573,7 @@ class ExamplesIterator(object):
             yield examples_x, examples_y
 
 
-parser = argparse.ArgumentParser(description='Script for training a FFNNLM over Harry Potter text.')
+parser = argparse.ArgumentParser(description='Script for training a FF-NN-LM over Harry Potter text.')
 parser.add_argument('--epochs', default=10, type=int, help='How many epochs to train for.')
 parser.add_argument('--regularization', default=0.0, type=float, help='L2 regularization parameter.')
 parser.add_argument('--context_size', default=4, type=int, help='How many previous tokens to use in predicting target.')
@@ -609,6 +615,7 @@ if __name__ == '__main__':
                 n_out=len(total_vocab)
             )
         ],
+        vocab=total_vocab,
         mini_batch_size=args.mini_batch_size
     )
 
