@@ -163,8 +163,8 @@ class TermDocumentMatrix(object):
 
 
 parser = argparse.ArgumentParser(description='Script for training a term-document matrix over Harry Potter.')
-parser.add_argument('-c', '--count', default=20, type=int, help='Minimum count of frequency for valid tokens.')
-parser.add_argument('-s', '--save', required=True, type=str, help='Path to save resulting model.')
+parser.add_argument('--min_count', default=20, type=int, help='Minimum count of frequency for valid tokens.')
+parser.add_argument('--save', required=True, type=str, help='Path to save resulting model.')
 
 
 if __name__ == '__main__':
@@ -175,7 +175,7 @@ if __name__ == '__main__':
 
     term_doc_matrix = TermDocumentMatrix(
         files=potter_files,
-        min_count=args.count
+        min_count=args.min_count
     )
 
     term_doc_matrix.save(

@@ -201,9 +201,9 @@ class WordWordMatrix(object):
         """
         A form of dimensionality-reduction from our sparse, long, co-occurrence based count vectors.
         Decompose (possibly weighted) co-occurrence matrix `self.matrix` into product of three matrices:
-          - W, an orthonormal matrix of left singular vectors as columns.
+          - W, an orthonormal matrix of left singular vectors.
           - Sigma, a diagonal matrix of singular values.
-          - C (transpose), an orthonormal matrix of right singular vectors as columns.
+          - C (transpose), an orthonormal matrix of right singular vectors.
 
         We then truncate the rows of W to `k_dim`, and use the resulting vectors as our short, dense word vectors.
         """
@@ -218,9 +218,9 @@ class WordWordMatrix(object):
 
 
 parser = argparse.ArgumentParser(description='Script for training a term-context matrix over Harry Potter.')
-parser.add_argument('-w', '--window', default=5, type=int, help='Size of window to base co-occurrence counts on.')
-parser.add_argument('-c', '--count', default=20, type=int, help='Minimum count of frequency for valid tokens.')
-parser.add_argument('-s', '--save', required=True, type=str, help='Path to save resulting model.')
+parser.add_argument('--window', default=5, type=int, help='Size of window to base co-occurrence counts on.')
+parser.add_argument('--min_count', default=20, type=int, help='Minimum count of frequency for valid tokens.')
+parser.add_argument('--save', required=True, type=str, help='Path to save resulting model.')
 
 
 if __name__ == '__main__':
@@ -232,7 +232,7 @@ if __name__ == '__main__':
     word_word_matrix = WordWordMatrix(
         files=potter_files,
         window_size=args.window,
-        min_count=args.count
+        min_count=args.min_count
     )
 
     word_word_matrix.save(

@@ -230,15 +230,15 @@ class GensimEmbeddings(object):
 
 
 parser = argparse.ArgumentParser(description='Script for training Word2Vec (skip-gram) model over Harry Potter books.')
-parser.add_argument('-a', '--algorithm', type=str, default='skip-gram', help='"skip-gram" or "cbow"')
-parser.add_argument('-w', '--window', default=5, type=int, help='Size of context window to take training tokens from.')
-parser.add_argument('-i', '--iter', default=20, type=int, help='How many iterations to train model over.')
-parser.add_argument('-c', '--count', default=5, type=int, help='Minimum count of frequency for valid tokens.')
-parser.add_argument('-d', '--dim', default=100, type=int, help='Size of resulting vector embeddings.')
-parser.add_argument('-p', '--phrases', type=int, default=0, help='How large are multi-word token phrases.')
-parser.add_argument('-n', '--negative', type=int, default=5, help='How many negative examples per target word.')
-parser.add_argument('-t', '--threads', type=int, default=4, help='How many worker threads to use during training.')
-parser.add_argument('-s', '--save', type=str, required=True, help='Path to save resulting models.')
+parser.add_argument('--algorithm', type=str, default='skip-gram', help='"skip-gram" or "cbow"')
+parser.add_argument('--window', default=5, type=int, help='Size of context window to take training tokens from.')
+parser.add_argument('--iter', default=20, type=int, help='How many iterations to train model over.')
+parser.add_argument('--min_count', default=5, type=int, help='Minimum count of frequency for valid tokens.')
+parser.add_argument('--dim', default=100, type=int, help='Size of resulting vector embeddings.')
+parser.add_argument('--phrases', type=int, default=0, help='How large are multi-word token phrases.')
+parser.add_argument('--negative', type=int, default=5, help='How many negative examples per target word.')
+parser.add_argument('--threads', type=int, default=4, help='How many worker threads to use during training.')
+parser.add_argument('--save', type=str, required=True, help='Path to save resulting models.')
 
 
 if __name__ == '__main__':
@@ -252,7 +252,7 @@ if __name__ == '__main__':
         algorithm=args.algorithm,
         window=args.window,
         n_iter=args.iter,
-        min_count=args.count,
+        min_count=args.min_count,
         vector_size=args.dim,
         phrases_size=args.phrases,
         negative_samples=args.negative,

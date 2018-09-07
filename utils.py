@@ -1,3 +1,4 @@
+import os
 import copy
 import nltk
 import regex
@@ -193,12 +194,12 @@ class Vocabulary(object):
 
 class MyTargetContextPairs(object):
     """
-    Iterates over text files to produce pairs of (target word, context words) for training NNLM models.
+    Iterates over text files to produce pairs of (target word, context words) for training (neural-network) LMs.
     Use MySentences class to iterate over tokens and sentences,
     and Vocabulary class to remove rare words (before creating context windows).
     """
 
-    def __init__(self, files, min_count=1, before_window=2, after_window=2):
+    def __init__(self, files, vocab, before_window=2, after_window=2):
         """
         `files` is a list of paths to text files to return (target, context) word pairs over.
 
@@ -211,17 +212,14 @@ class MyTargetContextPairs(object):
         but if we're training for language modelling, we only use words before to predict the target (next) word.
         """
 
+        self.vocab = vocab
         self.after_window = after_window
         self.before_window = before_window
         self.sentences = MySentences(files=files)
-        self.vocab = Vocabulary(files=files, min_count=min_count)
 
     def __iter__(self):
 
         for sent in self.sentences:
-
-            print(sent)
-            print
 
             for i, target in enumerate(sent):
                 # We yield one (target, context) pair for each target word
@@ -265,6 +263,68 @@ class MyTargetContextPairs(object):
                     j += 1
 
                 yield (target, list(reversed(words_before)) + words_after)
+
+
+def split_data(files, path_to_save_dir, fraction_train=0.8, fraction_test=0.1):
+    """
+    `files` is a list of paths to text files, holding all the lines of text we want to train some sort of model over.
+    We split all the text into three categories: training data, test data, validation data.
+    We have three files at the end storing all the lines of texts for these three files,
+    saved under the directory pointed to be `path_to_save_dir`.
+
+    `fraction_train` and `fraction_test` are the percentage of the data to split into training and testing, respectively
+    However much is left (i.e. 1.0 - `fraction_test` - `fraction_train`) is used for validation data.
+    """
+
+    # If destination directory to save files does not exist, make it
+    if not os.path.exists(path_to_save_dir):
+        os.mkdir(path_to_save_dir)
+
+    # Calculate indices at which to split data, e.g. 0 - 80% for training, 80% - 90 % testing, and the rest validating
+    assert fraction_train + fraction_test <= 1.0
+    train_split = fraction_train
+    test_split = fraction_train + fraction_test
+
+    # Calculate the path to each of the test, train, and validate files
+    train_data_file = os.path.join(path_to_save_dir, 'train_data.txt')
+    test_data_file = os.path.join(path_to_save_dir, 'test_data.txt')
+    validate_data_file = os.path.join(path_to_save_dir, 'validate_data.txt')
+
+    # Open a file pointer for each of the three files
+    train_fp = open(train_data_file, 'w')
+    test_fp = open(test_data_file, 'w')
+    validate_fp = open(validate_data_file, 'w')
+
+    for f in files:
+
+        with open(f, 'r') as open_f:
+
+            for line in open_f:
+
+                # Generate a random real number between 0.0 and 1.0
+                rand = random.randint(0, 100) / 100.0
+
+                # Find out which bin it lies between in train-test-validate portions, and put in that file
+
+                if 0.0 <= rand < train_split:
+                    train_fp.write(line)
+                    train_fp.write("\n")
+
+                elif train_split <= rand < test_split:
+                    test_fp.write(line)
+                    test_fp.write("\n")
+
+                else:  # test_split <= rand <= validate_split
+                    validate_fp.write(line)
+                    validate_fp.write("\n")
+
+    # Close all file pointers
+    train_fp.close()
+    test_fp.close()
+    validate_fp.close()
+
+    # Return paths to files if we want to use them down the pipeline
+    return train_data_file, test_data_file, validate_data_file
 
 
 def cosine_similarity(vector1, vector2):
