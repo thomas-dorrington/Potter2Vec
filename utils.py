@@ -1,11 +1,11 @@
 import os
 import copy
 import nltk
-import regex
 import random
 import numpy as np
 from progress.bar import Bar
 from numpy.linalg import norm
+from preprocessors import version_to_class, PreprocessorV1
 
 
 class DocumentNotInCollection(Exception):
@@ -31,18 +31,28 @@ class MySentences(object):
     Saves us from loading everything into memory at once during the training of vector space models.
     """
 
-    def __init__(self, files):
+    def __init__(self, files, preprocessor=None):
         """
         `files` is a list of paths to the text files.
         For the Harry Potter series, this will be a list of length 7, but easily applicable to any text files.
+        The only requirement is that paragraphs or sentences be separated by new new lines.
+
+        `preprocessor` is an instantiated class object used in pre-processing, or normalizing, tokens.
+        It must have a `preprocess` method accepting a list of word tokens (maybe output from `nltk.word_tokenize`),
+        and returning a list of strings, representing our pre-processed tokens.
+        If this is set to None, we use default version-V1 token pre-processor.
         """
 
         self.iteration = 0             # How many times we have iterated over all the text files - used for logging
         self.files = copy.copy(files)  # Copy so when we shuffle we don't affect any class `files` attribute
+        self.preprocessor = preprocessor if preprocessor is not None else PreprocessorV1()
 
     def __iter__(self):
         """
-        Implement iteration over class generator-style
+        Implement iteration over class generator-style.
+
+        For increased speed, rather than sentence segmenting, word tokenizing, and pre-processing each iteration,
+        these pre-processed lists could be saved off to disk, so iterations consists solely of loading files & yielding.
         """
 
         bar = Bar("Processing", max=len(self.files))
@@ -62,13 +72,15 @@ class MySentences(object):
                     line = line.strip()
 
                     if line:
+                        # If not empty string
 
                         sents = nltk.sent_tokenize(line.decode('utf8'))  # Line in text      -> list of sentences
                         sents = [nltk.word_tokenize(s) for s in sents]   # List of sentences -> list of list of tokens
-                        sents = [self.preprocess(s) for s in sents]      # Pre-process each token in each sent
+                        sents = [self.preprocessor.preprocess(s) for s in sents]  # Pre-process each token in each sent
 
                         for s in sents:
                             if s:
+                                # If not empty list
                                 yield s
 
             bar.next()
@@ -77,42 +89,20 @@ class MySentences(object):
 
         self.iteration += 1
 
-    def preprocess(self, tokens):
-        """
-        Clean line of text before yielding for training.
-        Takes a list of `tokens`, and returns a pre-processed version of this list.
-
-        For increased speed, rather than sentence segmenting, word tokenizing, and pre-processing each iteration,
-        these pre-processed lists could be saved off to disk, so iteration consists solely of loading files & yielding.
-        """
-
-        return_tokens = []
-
-        for tok in tokens:
-
-            tok = tok.lower()
-            tok = regex.sub(r'[^\p{Alpha} ]', '', tok, regex.U)  # Remove any character not alphabetical or a space
-            tok = tok.strip()                                    # Remove trailing or leading whitespace
-
-            if tok:
-                # If there are some characters left
-                return_tokens.append(tok)
-
-        return return_tokens
-
 
 class MyNGrams(object):
     """
     Class to iterate over sentences from a list of files,
     transforming sequence of commonly occurring tokens into n-grams using `gensim.models.phrases` package.
-    For example, when iterating over text files, rather than yielding
-     ["Harry", "Potter", "cast", "Expecto", "Patronum"],
-    we might yield
-     ["Harry_Potter", "cast", "Expecto_Patronum"]
+    E.g., when iterating over text files, rather than yielding ["Harry", "Potter", "cast", "Expecto", "Patronum"],
+    we might yield ["Harry_Potter", "cast", "Expecto_Patronum"]
     We are treating these commonly occurring n-grams as individual tokens, each with their own vector embedding.
+
+    This is used because semantics is not always compositional: "red tape" (if referring to bureaucracy)
+    might not have the intended meaning of "red" + "tape".
     """
 
-    def __init__(self, files, n_gram_phrasers):
+    def __init__(self, files, n_gram_phrasers, preprocessor=None):
         """
         `n_gram_phrasers` is a list of `gensim.models.phrases.Phraser` objects.
         While a `Phrases` object would also work in this setting, a Phraser is much more efficient, time and space wise
@@ -122,14 +112,16 @@ class MyNGrams(object):
         """
 
         self.n_gram_phrasers = n_gram_phrasers
-        self.sentences = MySentences(files=files)
+        self.sentences = MySentences(files=files, preprocessor=preprocessor)
 
     def __iter__(self):
 
         for s in self.sentences:
+
             for phraser in self.n_gram_phrasers:
-                # Convert adjacent words into collocations, incrementally if more than one Phraser
+                # Convert adjacent words into collocations, incrementally if more than one Phraser object in list
                 s = phraser[s]
+
             yield s
 
 
@@ -144,17 +136,21 @@ class Vocabulary(object):
     along side (neural) Network objects.
     """
 
-    def __init__(self, files, min_count=1, vocab=None):
+    def __init__(self, files, min_count=1, preprocessor=None, vocab=None):
         """
         `files` is a list of  paths to text files that constitute our training document collection.
 
         `min_count` the number of times a word must occur across corpus for it to be considered an entry in the vocab.
 
         `vocab` is non-None if we are loading from disk. Otherwise we compute & initialize from `files`
+
+        `preprocessor` is the class used to define what a token is in our corpus.
+        Used when iterating over sentences to normalize word tokens.
         """
 
         self.files = files
         self.min_count = min_count
+        self.preprocessor = PreprocessorV1() if preprocessor is None else preprocessor
         self.vocab = self._build_vocab() if vocab is None else vocab
 
     @staticmethod
@@ -163,6 +159,7 @@ class Vocabulary(object):
         return Vocabulary(
             files=loaded_vocab['files'],
             min_count=loaded_vocab['min_count'],
+            preprocessor=version_to_class(loaded_vocab['preprocessor']['version']).from_json(loaded_vocab['preprocessor']),
             vocab=loaded_vocab['vocab']
         )
 
@@ -171,28 +168,32 @@ class Vocabulary(object):
         return {
             'files': self.files,
             'min_count': self.min_count,
+            'preprocessor': self.preprocessor.to_json(),
             'vocab': self.vocab
         }
 
     def __len__(self):
+
         return len(self.vocab)
 
     def __getitem__(self, item):
+
         return self.vocab[item]
 
     def __iter__(self):
+
         for k in sorted(self.vocab, key=self.vocab.get):
             # Sort on values (i.e. unique increasing integers)
             yield k
 
     def _build_vocab(self):
         """
-        Build a vocabulary, i.e. a mapping from (unique) word type to (unique) integer.
+        Build a vocabulary, i.e. a dictionary mapping from (unique) word type to (unique) integer.
         """
 
         print("Building vocab ...")
 
-        sentences = MySentences(files=self.files)
+        sentences = MySentences(files=self.files, preprocessor=self.preprocessor)
 
         # Initialize a dictionary, mapping from word to its count in training corpus.
         vocab = {}
@@ -222,13 +223,13 @@ class MyTargetContextPairs(object):
     and Vocabulary class to remove rare words (before creating context windows).
     """
 
-    def __init__(self, files, vocab, before_window=2, after_window=2):
+    def __init__(self, files, vocab, before_window=2, after_window=2, preprocessor=None):
         """
         `files` is a list of paths to text files to return (target, context) word pairs over.
 
         `min_count` is the minimum frequency of a token across the corpus to consider it in the vocabulary.
         This is used to initialize a vocabulary object over `files`: we ignore all tokens not in the vocabulary.
-        We remove these tokens before creating context windows, narrowing the distance between legitimate tokens.
+        We remove these tokens before creating context windows, effectively narrowing distance between legitimate tokens
 
         `before_window` and `after_window` are the number of words either side of the target word to look for.
         Usually the window is symmetric either side, if training word2vec models for example,
@@ -238,7 +239,7 @@ class MyTargetContextPairs(object):
         self.vocab = vocab
         self.after_window = after_window
         self.before_window = before_window
-        self.sentences = MySentences(files=files)
+        self.sentences = MySentences(files=files, preprocessor=preprocessor)
 
     def __iter__(self):
 
@@ -252,7 +253,7 @@ class MyTargetContextPairs(object):
                     continue
 
                 # Keep looking for context words before target word until we either reach beginning of the sentence,
-                # or we have more than we are looking for (specified by `self.before_window`)
+                # or we have the number we are looking for (specified by `self.before_window`)
                 # If token not in vocabulary, we skip, ultimately increasing effective size of window.
                 j = 1
                 words_before = []
@@ -285,6 +286,7 @@ class MyTargetContextPairs(object):
 
                     j += 1
 
+                # Reverse words before so list of context words in ascending order of sentence position
                 yield (target, list(reversed(words_before)) + words_after)
 
 
@@ -297,6 +299,7 @@ def split_data(files, path_to_save_dir, fraction_train=0.8, fraction_test=0.1):
 
     `fraction_train` and `fraction_test` are the percentage of the data to split into training and testing, respectively
     However much is left (i.e. 1.0 - `fraction_test` - `fraction_train`) is used for validation data.
+    The default parameters use the common 80:10:10 split.
     """
 
     # If destination directory to save files does not exist, make it
@@ -362,7 +365,10 @@ def cosine_similarity(vector1, vector2):
 def most_similar(model, word, top_n=5, similarity_measure=cosine_similarity):
     """
     Returns the `top_n` most similar words to `word` under the vector embedding model defined by the `model` object.
-    `model` has an attribute, called `matrix`, that is the actual matrix of numbers.
+
+    `model` has an attribute, called `matrix`, that is the actual matrix of numbers,
+    and a `vocab` attribute, the dictionary of actual words the model is defined over.
+
     `similarity_measure` is the way we are defining similarity, typically cosine similarity.
     """
 

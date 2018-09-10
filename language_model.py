@@ -1,3 +1,4 @@
+import os
 import json
 import pickle
 import theano
@@ -6,6 +7,7 @@ import numpy as np
 import theano.tensor as T
 from theano.printing import pydotprint
 from theano.tensor.nnet import softmax
+from preprocessors import PreprocessorV1
 from utils import Vocabulary, MyTargetContextPairs, split_data
 
 
@@ -40,10 +42,10 @@ def activation_from_string(s):
 class Network(object):
     """
      Overall network object initializes and stores computation graph for neural network.
-     Allows us to train such a network in a supervised fashion, with methods for loading and saving models.
+     Allows us to train such a network in a supervised fashion, with methods for loading and saving models to disk.
      """
 
-    def __init__(self, layers, vocab, mini_batch_size):
+    def __init__(self, layers, vocab, mini_batch_size, statistics=None):
         """
         Takes a list of `layers` describing the network architecture (e.g. EmbeddingLayer, SoftmaxLayer, etc.)
 
@@ -60,7 +62,19 @@ class Network(object):
         self.layers = layers
         self.mini_batch_size = mini_batch_size
 
-        # Extract all the parameters in the network we want to learn
+        # We store one training loss per iteration, the average of the cost of each example in that mini-batch;
+        # one test loss per epoch, the average of the cost of all the test mini-batches;
+        # and one validate loss per epoch, the average of the cost of all the validate mini-batches.
+        # Similarly for accuracy
+        if statistics is None:
+            self.statistics = {
+                'costs': {'train': [], 'test': [], 'validate': []},
+                'accuracies': {'train': [], 'test': [], 'validate': []}
+            }
+        else:
+            self.statistics = statistics
+
+        # Extract all the parameters from all the layers in the network that we want to learn
         self.params = [param for layer in self.layers for param in layer.params]
 
         # Symbolically set up networks input and output
@@ -69,12 +83,12 @@ class Network(object):
 
         # Set the first layers input to our symbolic network input `self.x`
         init_layer = self.layers[0]
-        init_layer.set_inpt(self.x, self.mini_batch_size)
+        init_layer.set_inpt(inpt=self.x, mini_batch_size=self.mini_batch_size)
 
         # Propagate each layers' output to the next layers input
         for j in xrange(1, len(self.layers)):
             prev_layer, layer = self.layers[j-1], self.layers[j]
-            layer.set_inpt(prev_layer.output, self.mini_batch_size)
+            layer.set_inpt(inpt=prev_layer.output, mini_batch_size=self.mini_batch_size)
 
         # Final output of network is the output of final layer
         self.output = self.layers[-1].output
@@ -95,7 +109,8 @@ class Network(object):
         return Network(
             layers=[layer_class_from_string(layer['type']).from_json(layer) for layer in model['layers']],
             vocab=Vocabulary.from_json(model['vocab']),
-            mini_batch_size=mini_batch_size if mini_batch_size is not None else model['mini_batch_size']
+            mini_batch_size=mini_batch_size if mini_batch_size is not None else model['mini_batch_size'],
+            statistics=model['statistics']
         )
 
     def save(self, path_to_model):
@@ -106,7 +121,8 @@ class Network(object):
         model = {
             'layers': [layer.to_json() for layer in self.layers],
             'vocab': self.vocab.to_json(),
-            'mini_batch_size': self.mini_batch_size
+            'mini_batch_size': self.mini_batch_size,
+            'statistics': self.statistics
         }
 
         with open(path_to_model, 'w') as open_f:
@@ -129,6 +145,26 @@ class Network(object):
 
         pydotprint(theano.function([self.x], self.output), path_to_save)
 
+    def predict_example(self, x):
+        """
+        Takes input `x` to network, a concatenated vector of one-hot vectors representing context words.
+        Returns probability distribution over vocabulary for predicted target words.
+        We are assuming `x` is a single input, not a mini-batch matrix of multiple inputs.
+        We need to wrap `x` in a  one element sized array, because network expects mini-batches, i.e. arrays.
+        Similarly, need to get the first element of output matrix.
+        """
+
+        # This method will only work at predicting one example at a time
+        assert self.mini_batch_size == 1
+
+        predict = theano.function(
+            inputs=[],
+            outputs=self.output,
+            givens={self.x: np.asarray([x])}
+        )
+
+        return predict()[0]
+
     @staticmethod
     def adam(cost, params, learning_rate=0.001, b1=0.9, b2=0.999, e=1e-8, gamma=1 - 1e-8):
         """
@@ -137,12 +173,13 @@ class Network(object):
         Based on: http://arxiv.org/pdf/1412.6980v4.pdf
         """
 
-        grads = theano.grad(cost, params)  # Get gradients wrt. stochastic objective function
+        grads = theano.grad(cost, params)   # Get gradients wrt. stochastic objective function
         t = theano.shared(np.float32(1.0))  # Initialize time-step to 1
-        b1_t = b1 * gamma ** (t - 1.0)  # Decay the first moment running average coefficient
+        b1_t = b1 * gamma ** (t - 1.0)      # Decay the first moment running average coefficient
 
         updates = []
         for theta_previous, g in zip(params, grads):
+
             m_previous = theano.shared(np.zeros(theta_previous.get_value().shape, dtype=theano.config.floatX))
             v_previous = theano.shared(np.zeros(theta_previous.get_value().shape, dtype=theano.config.floatX))
 
@@ -165,7 +202,7 @@ class Network(object):
     def SGD(cost, params, eta=0.001):
         """
         Traditional stochastic gradient descent.
-        Simply move the parameters a small direction in the negative of gradient of cost function (wrt. that parameter)
+        Simply move the parameters a small direction in the negative of gradient of cost function
         """
 
         grads = T.grad(cost, params)
@@ -173,81 +210,123 @@ class Network(object):
 
         return updates
 
-    def fit_iterator(self, train_iterator, test_iterator, validate_iterator, epochs, lmbda=0.0, update_method=adam):
+    def fit_iterator(self,
+                     train_iterator,
+                     test_iterator,
+                     validate_iterator,
+                     epochs,
+                     lmbda=0.0,
+                     update_method=adam,
+                     path_to_save=None):
         """
         Train `self` in iterator-like fashion.
         `train_iterator`, `test_iterator`, and `validate_iterator`, are all iterators that yield
-        `self.mini_batch_size` number of (input, expected output) example pairs.
-        Generating examples on the fly much more efficient than loading everything into memory at once.
+        `self.mini_batch_size` number of (input, expected output) example pairs in tensor format.
+        Generating examples on the fly is much more efficient than loading everything into memory at once.
+
+        If `path_to_save` is not None, we want to save the model at the end of each epoch in this directory.
         """
+
+        # If we want to save the model at end of each epoch, check the target directory exists
+        if path_to_save is not None and not os.path.exists(path_to_save):
+            os.mkdir(path_to_save)
 
         # Define the (L2 regularized) cost function
         # We do not divide L2 regularization term by number of training batches; `lmbda` should be adjusted accordingly
-        if lmbda > 0.0:
-            l2_norm_squared = sum([(layer.w ** 2).sum() for layer in self.layers])
-            cost = self.layers[-1].cost(self) + 0.5 * lmbda * l2_norm_squared
-        else:
-            cost = self.layers[-1].cost(self)
+        l2_norm_squared = sum([(layer.w ** 2).sum() for layer in self.layers])
+        cost = self.layers[-1].cost(self) + 0.5 * lmbda * l2_norm_squared
 
         # Find symbolic update rules
-        updates = update_method(cost, self.params)
+        updates = update_method(cost=cost, params=self.params)
 
         # Set up symbolic variables to hold mini-batch inputs & outputs
         x = T.matrix("x")
         y = T.ivector("y")
 
-        # For a given mini-batch of inputs (`x`) and outputs (`y`), compute cost, and update parameters accordingly
+        # For a given mini-batch of inputs (`x`) and outputs (`y`), compute the loss, and update parameters accordingly
         train_mb = theano.function(
             inputs=[x, y],
-            outputs=cost,
+            outputs={'accuracy': self.layers[-1].accuracy(self.y), 'cost': cost},
             updates=updates,
             givens={self.x: x, self.y: y}
         )
 
-        # Accuracy for a given mini-batch of inputs (`x`) and outputs (`y`)
-        mb_accuracy = theano.function(
+        # Accuracy and cost for a given mini-batch of inputs (`x`) and outputs (`y`)
+        mb_statistics = theano.function(
             inputs=[x, y],
-            outputs=self.layers[-1].accuracy(self.y),
+            outputs={'accuracy': self.layers[-1].accuracy(self.y), 'cost': cost},
             givens={self.x: x, self.y: y}
-        )
 
-        # Store statistics during training
-        best_epoch = 0.0
-        best_test_accuracy = 0.0
-        best_validation_accuracy = 0.0
+        )
 
         # Do the actual training
         for epoch in xrange(epochs):
 
+            # Keep track of how many mini-batches we've trained for in this epoch for progress logging
             mini_batch_index = 0
+
             for train_x, train_y in train_iterator:
                 # Each iteration of iterator yields one mini-batch
 
-                if mini_batch_index % 1000 == 0:
+                if mini_batch_index % 100 == 0:
                     print("Training mini-batch number {0} of epoch {1}".format(mini_batch_index, epoch))
 
-                train_mb(train_x, train_y)
-                mini_batch_index += 1
+                train_stats = train_mb(train_x, train_y)
+
+                self.statistics['costs']['train'].append(train_stats['cost'])
+                self.statistics['accuracies']['train'].append(train_stats['accuracy'])
+
+                mini_batch_index += 1  # Increment mini-batch counter
 
             print("Finished training epoch {0}, with {1} mini-batches\n".format(epoch, mini_batch_index))
 
-            # After training from all mini-batches in one epoch, look at test & validation statistics
-            validation_accuracy = np.mean([mb_accuracy(x, y) for x, y in validate_iterator])
-            print("End of epoch {0}: validation accuracy of {1:.2%}".format(epoch, validation_accuracy))
+            print("Calculating validation scores and costs ...\n")
 
-            if validation_accuracy >= best_validation_accuracy:
+            # At end of epoch, calculate the average validation mini-batch cost and accuracy
+            validate_accuracy, validate_cost = [], []
+            for validate_x, validate_y in validate_iterator:
 
-                best_epoch = epoch
-                best_validation_accuracy = validation_accuracy
-                print("This is the best validation accuracy to date.")
+                validate_stats = mb_statistics(validate_x, validate_y)
+                validate_cost.append(validate_stats['cost'])
+                validate_accuracy.append(validate_stats['accuracy'])
 
-                best_test_accuracy = np.mean([mb_accuracy(x, y) for x, y in test_iterator])
-                print('The corresponding test accuracy for this epoch is {0:.2%}\n'.format(best_test_accuracy))
+            # Average validate cost and accuracy across all mini-batches
+            validate_cost = np.mean(validate_cost)
+            validate_accuracy = np.mean(validate_accuracy)
+
+            print("Calculating test scores and costs ...\n")
+
+            # At end of epoch, also calculate average test mini-batch cost and accuracy
+            test_accuracy, test_cost = [], []
+            for test_x, test_y in test_iterator:
+
+                test_stats = mb_statistics(test_x, test_y)
+                test_cost.append(test_stats['cost'])
+                test_accuracy.append(test_stats['accuracy'])
+
+            # Average test cost and accuracy across all mini-batches
+            test_cost = np.mean(test_cost)
+            test_accuracy = np.mean(test_accuracy)
+
+            print("End of epoch {0}: validation accuracy of {1:.2%} and cost of {2:.2}\n".format(
+                epoch, validate_accuracy, validate_cost)
+            )
+
+            print("End of epoch {0}: test accuracy of {1:.2%} and cost of {2:.2}\n".format(
+                epoch, test_accuracy, test_cost)
+            )
+
+            # Store statistics results in accumulating attribute
+            self.statistics['costs']['test'].append(test_cost)
+            self.statistics['costs']['validate'].append(validate_cost)
+            self.statistics['accuracies']['test'].append(test_accuracy)
+            self.statistics['accuracies']['validate'].append(validate_accuracy)
+
+            # Potentially save model at end of each iteration
+            if path_to_save is not None:
+                self.save(os.path.join(path_to_save, 'iter_%s.bin' % str(epoch)))
 
         print("Finished training network.")
-        print("Best validation accuracy of {0:.2%} obtained at end of epoch {1}".format(best_validation_accuracy,
-                                                                                        best_epoch))
-        print("Corresponding test accuracy of {0:.2%}".format(best_test_accuracy))
 
 
 class EmbeddingLayer(object):
@@ -276,7 +355,7 @@ class EmbeddingLayer(object):
         self.context_size = context_size
         self.learn_embeddings = learn_embeddings
 
-        # The number of total input connections is the product of:
+        # The number of total input connections this layer (not to the embedding matrix) is the product of:
         # - How many elements are in the vocab (i.e. the size of the one-hot vectors)
         # - How many of these vectors there are (i.e. how many context words we're using to predict the next word)
         self.n_in = self.context_size * self.vocab_size
@@ -424,6 +503,7 @@ class FullyConnectedLayer(object):
     def set_inpt(self, inpt, mini_batch_size):
 
         self.inpt = inpt.reshape((mini_batch_size, self.n_in))
+
         self.output = self.activation_fn(T.dot(self.inpt, self.w) + self.b)
 
 
@@ -481,12 +561,32 @@ class SoftmaxLayer(object):
     def set_inpt(self, inpt, mini_batch_size):
 
         self.inpt = inpt.reshape((mini_batch_size, self.n_in))
+
         self.output = softmax(T.dot(self.inpt, self.w) + self.b)
 
-        # Need to define final output as this layer is going to be used as final layer in network
-        self.y_out = T.argmax(self.output, axis=1)
+        self.y_out = T.argmax(self.output, axis=1)  # Need a final predicted output for this layer
 
     def cost(self, net):
+        """
+        Calculates log-likelihood cost function. A lot going on here ...
+
+        `net.y` will be set to a vector of integers, one integer for each example in the current mini-batch.
+        Each integer then corresponds to the index in the vocabulary we are expecting for the target word.
+
+        `T.arange(net.y.shape[0])` returns evenly spaced integers in range [0, number of examples in mini-batch]
+
+        `T.log` just logs values every element in `self.output` matrix.
+
+        By indexing into `T.log(self.output)` with indices `[T.arange(net.y.shape[0]), net.y]`,
+        we are picking out, for each example in the mini-batch, the index in the predicted vector of probabilities,
+        which corresponds to the index it should be 1 in according to our expected `net.y` vector.
+        We are doing a hard classification task, so only one index in the predicted ouput vector of probabilities
+        should be set to 1.
+
+        We then average these probabilities for our final cost.
+        If we did a good job of prediction, the probabilities in the expected word indices should be close to 1.0,
+        and the other probabilities across the rest of the predicted probability distribution all close to 0.0
+        """
 
         return -T.mean(T.log(self.output)[T.arange(net.y.shape[0]), net.y])
 
@@ -495,18 +595,18 @@ class SoftmaxLayer(object):
         return T.mean(T.eq(y, self.y_out))
 
 
-class ExamplesIterator(object):
+class LanguageModellingExamplesIterator(object):
     """
     Used to iterate over a single file of sentence data, either for training, testing, or validating purposes.
     This means we will need to pre-compute our data split before-hand, e.g. 80:10:10 split,
     which the utility function `utils.split_data` can handily do for us.
 
-    When iterating over the class object, we yield (input, expected output) pairs,
-    where output is the index in vocabulary for target word,
+    When iterating over an instance of this class object, we yield (input, expected output) pairs,
+    where output is the integer index in vocabulary for target word,
     and input is a concatenated vector of one-hot vectors for the corresponding context words.
     """
 
-    def __init__(self, file, vocab, mini_batch_size, context_size=4):
+    def __init__(self, file, vocab, mini_batch_size, context_size=4, preprocessor=None):
         """
         `file` points to either a training file, test file, or validation file,
         which is a big list of lines of text we use to generate supervised examples over (disjoint from one another).
@@ -528,16 +628,17 @@ class ExamplesIterator(object):
             files=[self.file],
             vocab=vocab,
             before_window=self.context_size,
-            after_window=0
+            after_window=0,
+            preprocessor=preprocessor
         )
 
     def __iter__(self):
         """
         We yield (input, expected output) pairs for iterative NN training.
-        Each yield returns `self.mini_batch_size` number of examples in a matrix.
+        Each yield returns `self.mini_batch_size` number of examples.
         """
 
-        # Running list to accumulate examples before yielding, until we have enough to constitute a mini-batch size.
+        # Running list to accumulate examples, until enough to constitute a mini-batch size, at which point we yield
         # Assert they always have the same size/length
         examples_x, examples_y = [], []
 
@@ -560,6 +661,7 @@ class ExamplesIterator(object):
             # Concatenate input into one long input vector
             input = np.concatenate(input)
 
+            # Get integer index of target word
             output = self.vocab[target]
 
             examples_x.append(input)
@@ -581,7 +683,7 @@ parser.add_argument('--min_count', default=25, type=int, help='Minimum count of 
 parser.add_argument('--hidden_units', default=50, type=int, help='How many units in hidden layer.')
 parser.add_argument('--mini_batch_size', default=64, type=int, help='How many examples in each mini-batch.')
 parser.add_argument('--dimensions', default=100, type=int, help='Size of resulting word embeddings.')
-parser.add_argument('--save', required=True, type=str, help='Path to save resulting model.')
+parser.add_argument('--save', required=True, type=str, help='Path to directory save resulting models.')
 
 
 if __name__ == '__main__':
@@ -593,8 +695,15 @@ if __name__ == '__main__':
     # Split total data set into training, testing, and validation data, and obtain paths to those files
     train_data_file, test_data_file, validate_data_file = split_data(potter_files, path_to_save_dir='data_split')
 
+    # Initialize a token pre-processor object to share across classes
+    preprocessor = PreprocessorV1()
+
     # Generate an overall vocabulary for all the testing, training, and validation data
-    total_vocab = Vocabulary(files=[train_data_file, test_data_file, validate_data_file], min_count=args.min_count)
+    total_vocab = Vocabulary(
+        files=[train_data_file, test_data_file, validate_data_file],
+        min_count=args.min_count,
+        preprocessor=preprocessor
+    )
 
     # Initialize network and corresponding computation graph
     network = Network(
@@ -620,17 +729,38 @@ if __name__ == '__main__':
     )
 
     # Generate our (input, expected output) iterators for training, testing, and validating
-    train_iterator = ExamplesIterator(train_data_file, total_vocab, args.mini_batch_size, args.context_size)
-    test_iterator = ExamplesIterator(test_data_file, total_vocab, args.mini_batch_size, args.context_size)
-    validate_iterator = ExamplesIterator(validate_data_file, total_vocab, args.mini_batch_size, args.context_size)
 
+    train_iterator = LanguageModellingExamplesIterator(
+        file=train_data_file,
+        vocab=total_vocab,
+        mini_batch_size=args.mini_batch_size,
+        context_size=args.context_size,
+        preprocessor=preprocessor
+    )
+
+    test_iterator = LanguageModellingExamplesIterator(
+        file=test_data_file,
+        vocab=total_vocab,
+        mini_batch_size=args.mini_batch_size,
+        context_size=args.context_size,
+        preprocessor=preprocessor
+    )
+
+    validate_iterator = LanguageModellingExamplesIterator(
+        file=validate_data_file,
+        vocab=total_vocab,
+        mini_batch_size=args.mini_batch_size,
+        context_size=args.context_size,
+        preprocessor=preprocessor
+    )
+
+    # Train the network
     network.fit_iterator(
         train_iterator=train_iterator,
         test_iterator=test_iterator,
         validate_iterator=validate_iterator,
         epochs=args.epochs,
         lmbda=args.regularization,
-        update_method=Network.adam
+        update_method=Network.adam,
+        path_to_save=args.save
     )
-
-    network.save(args.save)
