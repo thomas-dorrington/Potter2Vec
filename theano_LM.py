@@ -633,7 +633,7 @@ class ExamplesIterator(object):
         # We are using this class for predictive language modelling here, so no words after target word, only before.
         self.context_pairs = MyTargetContextPairs(
             files=[self.file],
-            vocab=vocab,
+            vocab=self.vocab,
             before_window=self.context_size,
             after_window=0,
             preprocessor=preprocessor
@@ -703,28 +703,37 @@ class OptimizedExamplesIterator(object):
         """
         All arguments the same as ordinary ExamplesIterator, except:
 
-        - `dir_to_save` is the path to the directory we are going to save all the files of pre-computed mini-batches,
+        - `dir_to_save` is the path to the directory we are going to save all the files of pre-computed mini-batches.
+           If this already exists, we assume it holds pre-computed mini-batches, and we do not need to generate any more
 
         - `mini_batches_per_file` is how many mini-batches to save in each file.
         """
 
+        self.dir_to_save = dir_to_save
         self.mini_batches_per_file = mini_batches_per_file
 
-        self.dir_to_save = dir_to_save
-        if not os.path.exists(self.dir_to_save):
+        if os.path.exists(self.dir_to_save):
+            # We have already pre-computed and saved our mini-batches to disk.
+            # Load these to use for training.
+
+            self.paths_to_files = [os.path.join(self.dir_to_save, x) for x in os.listdir(self.dir_to_save)]
+
+        else:
+            # We are computing our mini-batches to disk for the first time
+
             os.mkdir(self.dir_to_save)
 
-        self.iterator = ExamplesIterator(
-            file=file,
-            vocab=vocab,
-            mini_batch_size=mini_batch_size,
-            context_size=context_size,
-            preprocessor=preprocessor
-        )
+            self.iterator = ExamplesIterator(
+                file=file,
+                vocab=vocab,
+                mini_batch_size=mini_batch_size,
+                context_size=context_size,
+                preprocessor=preprocessor
+            )
 
-        # Initialize all the files containing mini-batches,
-        # and return a list of paths to those files to know where to load them from during iteration
-        self.paths_to_files = self._init_data()
+            # Initialize all the files containing mini-batches,
+            # and return a list of paths to those files to know where to load them from during iteration
+            self.paths_to_files = self._init_data()
 
     def __iter__(self):
         """
@@ -807,7 +816,7 @@ if __name__ == '__main__':
     potter_files = ['data/%s.txt' % str(i) for i in range(1, 8)]
 
     # Split total data set into training, testing, and validation data, and obtain paths to those files
-    train_data_file, test_data_file, validate_data_file = split_data(potter_files, path_to_save_dir='data_split')
+    train_data_file, test_data_file, validate_data_file = split_data(files=potter_files, path_to_save_dir='data_split')
 
     # Initialize a token pre-processor object to share across classes
     preprocessor = PreprocessorV1()

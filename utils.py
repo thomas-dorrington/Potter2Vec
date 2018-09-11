@@ -302,19 +302,22 @@ def split_data(files, path_to_save_dir, fraction_train=0.8, fraction_test=0.1):
     The default parameters use the common 80:10:10 split.
     """
 
-    # If destination directory to save files does not exist, make it
-    if not os.path.exists(path_to_save_dir):
-        os.mkdir(path_to_save_dir)
+    # Calculate the path to each of the test, train, and validate files
+    train_data_file = os.path.join(path_to_save_dir, 'train_data.txt')
+    test_data_file = os.path.join(path_to_save_dir, 'test_data.txt')
+    validate_data_file = os.path.join(path_to_save_dir, 'validate_data.txt')
+
+    if os.path.exists(path_to_save_dir):
+        # If we've already split the data and this directory exists, do not re-compute
+
+        return train_data_file, test_data_file, validate_data_file
+
+    os.mkdir(path_to_save_dir)
 
     # Calculate indices at which to split data, e.g. 0 - 80% for training, 80% - 90 % testing, and the rest validating
     assert fraction_train + fraction_test <= 1.0
     train_split = fraction_train
     test_split = fraction_train + fraction_test
-
-    # Calculate the path to each of the test, train, and validate files
-    train_data_file = os.path.join(path_to_save_dir, 'train_data.txt')
-    test_data_file = os.path.join(path_to_save_dir, 'test_data.txt')
-    validate_data_file = os.path.join(path_to_save_dir, 'validate_data.txt')
 
     # Open a file pointer for each of the three files
     train_fp = open(train_data_file, 'w')
