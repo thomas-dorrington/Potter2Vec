@@ -1,9 +1,9 @@
 import os
 import json
-import pickle
 import theano
 import argparse
 import numpy as np
+import cPickle as pickle
 import theano.tensor as T
 from theano.printing import pydotprint
 from theano.tensor.nnet import softmax
@@ -317,8 +317,10 @@ class Network(object):
             )
 
             # Store statistics results in accumulating attribute
+
             self.statistics['costs']['test'].append(test_cost)
             self.statistics['costs']['validate'].append(validate_cost)
+
             self.statistics['accuracies']['test'].append(test_accuracy)
             self.statistics['accuracies']['validate'].append(validate_accuracy)
 
@@ -595,7 +597,7 @@ class SoftmaxLayer(object):
         return T.mean(T.eq(y, self.y_out))
 
 
-class LanguageModellingExamplesIterator(object):
+class ExamplesIterator(object):
     """
     Used to iterate over a single file of sentence data, either for training, testing, or validating purposes.
     This means we will need to pre-compute our data split before-hand, e.g. 80:10:10 split,
@@ -606,7 +608,12 @@ class LanguageModellingExamplesIterator(object):
     and input is a concatenated vector of one-hot vectors for the corresponding context words.
     """
 
-    def __init__(self, file, vocab, mini_batch_size, context_size=4, preprocessor=None):
+    def __init__(self,
+                 file,
+                 vocab,
+                 mini_batch_size,
+                 context_size=4,
+                 preprocessor=None):
         """
         `file` points to either a training file, test file, or validation file,
         which is a big list of lines of text we use to generate supervised examples over (disjoint from one another).
@@ -658,8 +665,9 @@ class LanguageModellingExamplesIterator(object):
             for i, wd in enumerate(context):
                 input[i][self.vocab[wd]] = 1.0
 
-            # Concatenate input into one long input vector
-            input = np.concatenate(input)
+            # Concatenate input into one long input vector, then back from np.array to Python list
+            # Lists are easier to pass around, especially if loading & saving using OptimizedExamplesIterator
+            input = np.concatenate(input).tolist()
 
             # Get integer index of target word
             output = self.vocab[target]
@@ -673,6 +681,112 @@ class LanguageModellingExamplesIterator(object):
         # This shouldn't be too problematic if mini-batch size is small enough.
         if len(examples_x) == self.mini_batch_size:
             yield examples_x, examples_y
+
+
+class OptimizedExamplesIterator(object):
+    """
+    We need to significantly speed up the loading and pre-processing of data to yield for inference and training.
+    Therefore, we pre-generate all our mini-batches of examples, and save to disk.
+    So, yielding examples for training solely consists of loading files one at a time,
+    and iterating over each mini-batch in the file, yielding one at a time.
+    We use json, instead of cPickle; loading is much faster.
+    """
+
+    def __init__(self,
+                 file,
+                 vocab,
+                 mini_batch_size,
+                 dir_to_save,
+                 context_size=4,
+                 preprocessor=None,
+                 mini_batches_per_file=100):
+        """
+        All arguments the same as ordinary ExamplesIterator, except:
+
+        - `dir_to_save` is the path to the directory we are going to save all the files of pre-computed mini-batches,
+
+        - `mini_batches_per_file` is how many mini-batches to save in each file.
+        """
+
+        self.mini_batches_per_file = mini_batches_per_file
+
+        self.dir_to_save = dir_to_save
+        if not os.path.exists(self.dir_to_save):
+            os.mkdir(self.dir_to_save)
+
+        self.iterator = ExamplesIterator(
+            file=file,
+            vocab=vocab,
+            mini_batch_size=mini_batch_size,
+            context_size=context_size,
+            preprocessor=preprocessor
+        )
+
+        # Initialize all the files containing mini-batches,
+        # and return a list of paths to those files to know where to load them from during iteration
+        self.paths_to_files = self._init_data()
+
+    def __iter__(self):
+        """
+        Iterate through saved files; in each file, iterate through saved off mini-batches
+        """
+
+        for f in self.paths_to_files:
+
+            with open(f, 'r') as open_f:
+
+                examples = json.load(open_f)
+
+                for x, y in examples:
+                    yield x, y
+
+    def _init_data(self):
+
+        print("Pre-computing mini-batches and saving to directory: %s.\n" % self.dir_to_save)
+
+        # Accumulate list of all paths to files we have saved mini-batches under, under this model.
+        paths_to_files = []
+
+        # Keep accumulating pairs of (input, expected output) mini-batch pairs in `examples`,
+        # until we have `mini_batches_per_file`, at which point we save them to disk and reset our examples store.
+        # `file_index` is the number of files we've iterated through, used to know what to call the next file.
+        examples = []
+        file_index = 0
+
+        for x, y in self.iterator:
+            # Each `x`, `y` is mini-batch number of inputs and expected outputs.
+
+            if len(examples) == self.mini_batches_per_file:
+
+                path_to_file = os.path.join(self.dir_to_save, '%s.bin' % str(file_index))
+                paths_to_files.append(path_to_file)
+
+                with open(path_to_file, 'w') as open_f:
+                    json.dump(examples, open_f)
+
+                examples = []  # Reset examples store
+                file_index += 1  # Increment number of files written to
+
+                print("Written %s files to disk so far, each storing %s mini-batches of examples" %
+                      (str(file_index), str(self.mini_batches_per_file)))
+
+            examples.append((x, y))
+
+        if len(examples) > 0:
+            # Dump last remaining examples that are not an even divisor of `self.mini_batches_per_file`
+
+            path_to_file = os.path.join(self.dir_to_save, '%s.bin' % str(file_index))
+            paths_to_files.append(path_to_file)
+
+            with open(path_to_file, 'w') as open_f:
+                json.dump(examples, open_f)
+
+            print("Written %s files to disk, this last one storing %s mini-batches of examples" %
+                  (str(file_index), str(len(examples))))
+
+        print("Finished saving pre-computing mini-batches to disk across {0} files\n".format(len(paths_to_files)))
+
+        return paths_to_files
 
 
 parser = argparse.ArgumentParser(description='Script for training a FF-NN-LM over Harry Potter text.')
@@ -730,28 +844,34 @@ if __name__ == '__main__':
 
     # Generate our (input, expected output) iterators for training, testing, and validating
 
-    train_iterator = LanguageModellingExamplesIterator(
+    train_iterator = OptimizedExamplesIterator(
         file=train_data_file,
         vocab=total_vocab,
         mini_batch_size=args.mini_batch_size,
+        dir_to_save=os.path.join('data_split', 'train_mini_batches'),
         context_size=args.context_size,
-        preprocessor=preprocessor
+        preprocessor=preprocessor,
+        mini_batches_per_file=250
     )
 
-    test_iterator = LanguageModellingExamplesIterator(
+    test_iterator = OptimizedExamplesIterator(
         file=test_data_file,
         vocab=total_vocab,
         mini_batch_size=args.mini_batch_size,
+        dir_to_save=os.path.join('data_split', 'test_mini_batches'),
         context_size=args.context_size,
-        preprocessor=preprocessor
+        preprocessor=preprocessor,
+        mini_batches_per_file=250
     )
 
-    validate_iterator = LanguageModellingExamplesIterator(
+    validate_iterator = OptimizedExamplesIterator(
         file=validate_data_file,
         vocab=total_vocab,
         mini_batch_size=args.mini_batch_size,
+        dir_to_save=os.path.join('data_split', 'validate_mini_batches'),
         context_size=args.context_size,
-        preprocessor=preprocessor
+        preprocessor=preprocessor,
+        mini_batches_per_file=250
     )
 
     # Train the network
