@@ -648,7 +648,7 @@ class ExamplesIterator(object):
         random.shuffle(c)
         examples_x, examples_y = zip(*c)
 
-        return examples_x, examples_y
+        return list(examples_x), list(examples_y)
 
     def __iter__(self):
         """
@@ -664,6 +664,7 @@ class ExamplesIterator(object):
 
             if len(context) != self.context_size:
                 # We require a full number previous context words for a training example
+                # Should probably use start & end of sentence tags
                 continue
 
             if len(examples_x) == self.mini_batch_size:
@@ -860,6 +861,9 @@ if __name__ == '__main__':
         min_count=args.min_count,
         preprocessor=preprocessor
     )
+
+    with open('test_vocab.bin', 'w') as open_f:
+        pickle.dump(total_vocab.to_json(), open_f)
 
     # Initialize network and corresponding computation graph
     network = Network(
