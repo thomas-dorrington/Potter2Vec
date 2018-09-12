@@ -1,6 +1,7 @@
 import os
 import json
 import theano
+import random
 import argparse
 import numpy as np
 import cPickle as pickle
@@ -639,6 +640,16 @@ class ExamplesIterator(object):
             preprocessor=preprocessor
         )
 
+    @staticmethod
+    def shuffle_mini_batch(examples_x, examples_y):
+        # Shuffle examples within a mini-batch, while retaining order in corresponding lists
+
+        c = list(zip(examples_x, examples_y))
+        random.shuffle(c)
+        examples_x, examples_y = zip(*c)
+
+        return examples_x, examples_y
+
     def __iter__(self):
         """
         We yield (input, expected output) pairs for iterative NN training.
@@ -657,7 +668,12 @@ class ExamplesIterator(object):
 
             if len(examples_x) == self.mini_batch_size:
                 # If we've accumulated enough examples for a mini-batch, yield and reset our examples store.
+
+                # Shuffle examples within each mini-batch
+                examples_x, examples_y = ExamplesIterator.shuffle_mini_batch(examples_x, examples_y)
+
                 yield examples_x, examples_y
+
                 examples_x, examples_y = [], []
 
             # Set up a one-hot vector for each word in our previous context
@@ -680,6 +696,10 @@ class ExamplesIterator(object):
         # This means we do truncate any examples at the end of our data set not an equal divisor of mini-batch size.
         # This shouldn't be too problematic if mini-batch size is small enough.
         if len(examples_x) == self.mini_batch_size:
+
+            # Shuffle examples within each mini-batch
+            examples_x, examples_y = ExamplesIterator.shuffle_mini_batch(examples_x, examples_y)
+
             yield examples_x, examples_y
 
 
@@ -717,15 +737,13 @@ class OptimizedExamplesIterator(object):
         self.mini_batch_size = mini_batch_size
         self.mini_batches_per_file = mini_batches_per_file
 
-        if os.path.exists(self.dir_to_save):
-            # We have already pre-computed and saved our mini-batches to disk.
-            # Load these to use for training.
-            self.paths_to_files = [os.path.join(self.dir_to_save, x) for x in os.listdir(self.dir_to_save)]
-
-        else:
+        if not os.path.exists(self.dir_to_save):
             # We are computing our mini-batches to disk for the first time
+
             os.mkdir(self.dir_to_save)
-            self.paths_to_files = self._init_data()
+            self._init_data()
+
+        self.paths_to_files = [os.path.join(self.dir_to_save, x) for x in os.listdir(self.dir_to_save)]
 
     def __iter__(self):
         """
@@ -764,9 +782,6 @@ class OptimizedExamplesIterator(object):
             preprocessor=self.preprocessor
         )
 
-        # Accumulate list of all paths to files we have saved mini-batches under, under this model
-        paths_to_files = []
-
         # Keep accumulating pairs of (input, expected output) mini-batch pairs in `examples`,
         # until we have `mini_batches_per_file`, at which point we save them to disk and reset our examples store.
         # `file_index` is the number of files we've iterated through, used to know what to call the next file.
@@ -779,10 +794,9 @@ class OptimizedExamplesIterator(object):
 
             if len(examples) == self.mini_batches_per_file:
 
-                path_to_file = os.path.join(self.dir_to_save, '%s.bin' % str(file_index))
-                paths_to_files.append(path_to_file)
+                random.shuffle(examples)
 
-                with open(path_to_file, 'w') as open_f:
+                with open(os.path.join(self.dir_to_save, '%s.bin' % str(file_index)), 'w') as open_f:
                     json.dump(examples, open_f)
 
                 examples = []    # Reset examples store
@@ -804,18 +818,17 @@ class OptimizedExamplesIterator(object):
         if len(examples) > 0:
             # Dump last remaining examples that are not an even divisor of `self.mini_batches_per_file`
 
-            path_to_file = os.path.join(self.dir_to_save, '%s.bin' % str(file_index))
-            paths_to_files.append(path_to_file)
+            random.shuffle(examples)
 
-            with open(path_to_file, 'w') as open_f:
+            with open(os.path.join(self.dir_to_save, '%s.bin' % str(file_index)), 'w') as open_f:
                 json.dump(examples, open_f)
+
+            file_index += 1
 
             print("Written %s files to disk, this last one storing %s mini-batches of examples" %
                   (str(file_index), str(len(examples))))
 
-        print("Finished saving pre-computing mini-batches to disk across {0} files\n".format(len(paths_to_files)))
-
-        return paths_to_files
+        print("Finished saving pre-computed mini-batches to disk across {0} files\n".format(file_index))
 
 
 parser = argparse.ArgumentParser(description='Script for training a FF-NN-LM over Harry Potter text.')
