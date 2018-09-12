@@ -603,7 +603,7 @@ class ExamplesIterator(object):
     This means we will need to pre-compute our data split before-hand, e.g. 80:10:10 split,
     which the utility function `utils.split_data` can handily do for us.
 
-    When iterating over an instance of this class object, we yield (input, expected output) pairs,
+    When iterating over an instance of this class object, we yield mini-batch number of (input, expected output) pairs,
     where output is the integer index in vocabulary for target word,
     and input is a concatenated vector of one-hot vectors for the corresponding context words.
     """
@@ -689,7 +689,6 @@ class OptimizedExamplesIterator(object):
     Therefore, we pre-generate all our mini-batches of examples, and save to disk.
     So, yielding examples for training solely consists of loading files one at a time,
     and iterating over each mini-batch in the file, yielding one at a time.
-    We use json, instead of cPickle; loading is much faster.
     """
 
     def __init__(self,
@@ -709,30 +708,23 @@ class OptimizedExamplesIterator(object):
         - `mini_batches_per_file` is how many mini-batches to save in each file.
         """
 
+        self.file = file
+        self.vocab = vocab
         self.dir_to_save = dir_to_save
+        self.context_size = context_size
+        self.vocab_size = len(self.vocab)
+        self.preprocessor = preprocessor
+        self.mini_batch_size = mini_batch_size
         self.mini_batches_per_file = mini_batches_per_file
 
         if os.path.exists(self.dir_to_save):
             # We have already pre-computed and saved our mini-batches to disk.
             # Load these to use for training.
-
             self.paths_to_files = [os.path.join(self.dir_to_save, x) for x in os.listdir(self.dir_to_save)]
 
         else:
             # We are computing our mini-batches to disk for the first time
-
             os.mkdir(self.dir_to_save)
-
-            self.iterator = ExamplesIterator(
-                file=file,
-                vocab=vocab,
-                mini_batch_size=mini_batch_size,
-                context_size=context_size,
-                preprocessor=preprocessor
-            )
-
-            # Initialize all the files containing mini-batches,
-            # and return a list of paths to those files to know where to load them from during iteration
             self.paths_to_files = self._init_data()
 
     def __iter__(self):
@@ -743,17 +735,36 @@ class OptimizedExamplesIterator(object):
         for f in self.paths_to_files:
 
             with open(f, 'r') as open_f:
-
                 examples = json.load(open_f)
 
-                for x, y in examples:
-                    yield x, y
+            for x, y in examples:
+                # Each `x` is a mini-batch of examples, e.g. a list of 64 or 128 examples
+                # We saved the concatenated one-hot vectors off to disk compressed, storing only the indices of ones
+                # We need to convert them back here to those sparse vectors
+
+                for x_index in xrange(len(x)):
+
+                    one_hot_x = np.zeros(self.context_size * self.vocab_size)
+                    for i in x[x_index]:
+                        one_hot_x[i] = 1.0
+
+                    x[x_index] = one_hot_x
+
+                yield x, y
 
     def _init_data(self):
 
         print("Pre-computing mini-batches and saving to directory: %s.\n" % self.dir_to_save)
 
-        # Accumulate list of all paths to files we have saved mini-batches under, under this model.
+        iterator = ExamplesIterator(
+            file=self.file,
+            vocab=self.vocab,
+            mini_batch_size=self.mini_batch_size,
+            context_size=self.context_size,
+            preprocessor=self.preprocessor
+        )
+
+        # Accumulate list of all paths to files we have saved mini-batches under, under this model
         paths_to_files = []
 
         # Keep accumulating pairs of (input, expected output) mini-batch pairs in `examples`,
@@ -762,8 +773,9 @@ class OptimizedExamplesIterator(object):
         examples = []
         file_index = 0
 
-        for x, y in self.iterator:
-            # Each `x`, `y` is mini-batch number of inputs and expected outputs.
+        for x, y in iterator:
+            # Each `x`, `y` is mini-batch number of inputs and expected output pairs.
+            # That is, `len(x) == len(y) == self.mini_batch_size`
 
             if len(examples) == self.mini_batches_per_file:
 
@@ -773,11 +785,19 @@ class OptimizedExamplesIterator(object):
                 with open(path_to_file, 'w') as open_f:
                     json.dump(examples, open_f)
 
-                examples = []  # Reset examples store
+                examples = []    # Reset examples store
                 file_index += 1  # Increment number of files written to
 
                 print("Written %s files to disk so far, each storing %s mini-batches of examples" %
                       (str(file_index), str(self.mini_batches_per_file)))
+
+            # We compress input of concatenated one-hot vectors to drastically save time loading & saving
+            # by storing only the indices of the 1.0's, not all the zeros
+            for x_index in xrange(len(x)):
+                # Iterate through each example in the mini-batch `x`
+                # Get all the indices at which the example is 1.0, and reassign it
+
+                x[x_index] = [i for i, el in enumerate(x[x_index]) if el == 1.0]
 
             examples.append((x, y))
 
@@ -890,6 +910,6 @@ if __name__ == '__main__':
         validate_iterator=validate_iterator,
         epochs=args.epochs,
         lmbda=args.regularization,
-        update_method=Network.adam,
+        update_method=lambda cost, params: Network.adam(cost, params, learning_rate=0.0005),
         path_to_save=args.save
     )
