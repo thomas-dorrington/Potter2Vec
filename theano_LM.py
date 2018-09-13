@@ -855,15 +855,24 @@ if __name__ == '__main__':
     # Initialize a token pre-processor object to share across classes
     preprocessor = PreprocessorV1()
 
-    # Generate an overall vocabulary for all the testing, training, and validation data
-    total_vocab = Vocabulary(
-        files=[train_data_file, test_data_file, validate_data_file],
-        min_count=args.min_count,
-        preprocessor=preprocessor
-    )
+    if os.path.exists('data_split/vocab.bin'):
 
-    with open('test_vocab.bin', 'w') as open_f:
-        pickle.dump(total_vocab.to_json(), open_f)
+        with open('data_split/vocab.bin', 'r') as open_f:
+            total_vocab = Vocabulary.from_json(pickle.load(open_f))
+
+    else:
+        # Generate an overall vocabulary for all the testing, training, and validation data
+        # This is cheating a bit - technically the model shouldn't know anything about vocab of the test/validate set
+        # But it would complicated the code and indexing into vocabulary/one-hot vectors a lot more complicated
+
+        total_vocab = Vocabulary(
+            files=[train_data_file, test_data_file, validate_data_file],
+            min_count=args.min_count,
+            preprocessor=preprocessor
+        )
+
+        with open('data_split/vocab.bin', 'w') as open_f:
+            pickle.dump(total_vocab.to_json(), open_f)
 
     # Initialize network and corresponding computation graph
     network = Network(
@@ -927,6 +936,6 @@ if __name__ == '__main__':
         validate_iterator=validate_iterator,
         epochs=args.epochs,
         lmbda=args.regularization,
-        update_method=lambda cost, params: Network.adam(cost, params, learning_rate=0.0005),
+        update_method=lambda cost, params: Network.adam(cost, params, learning_rate=0.001),
         path_to_save=args.save
     )
